@@ -1,131 +1,144 @@
-# Kid Supervisor v3 - 树莓派5 优化版
+# Kid Supervisor v3 - 儿童学习监督系统
 
-基于 GitHub 社区成熟方案重新设计，充分发挥 **树莓派5 8G + SSD** 的性能！
-
----
-
-## 🎯 推荐方案对比
-
-| 方案 | v1 (旧) | v2 (模块化) | **v3 (推荐)** |
-|------|---------|-------------|---------------|
-| 检测引擎 | Haar Cascade | Haar/MediaPipe 可选 | **MediaPipe Pose + Face Mesh** |
-| 语音框架 | 无 | 预留 Dummy 接口 | **OpenWakeWord + Faster-Whisper + Piper** |
-| 架构 | 单文件 | 模块化 | **事件驱动 + 可选 MQTT** |
-| 数据持久化 | 内存 | SQLite | SQLite + 可选上传 |
-| 硬件要求 | 低 | 中 | **树莓派 4/5 (8G)** |
+基于树莓派 5 的智能学习监督系统，通过机器视觉实现人脸检测、姿态估计、距离测量和学习时长统计。
 
 ---
 
-## 🏗️ 技术选型理由（基于社区最佳实践）
+## 目录
 
-### 视觉检测：MediaPipe (Google 官方)
-- ✅ 有针对 ARM64 的 NEON 优化
-- ✅ RPi5 上可达 **15-20 FPS** (model_complexity=1)
-- ✅ 提供 33 个精确的人体关键点
-- ✅ Face Mesh 可做准确的头部姿态估计
-- 参考: https://github.com/google/mediapipe
-
-### 唤醒词：OpenWakeWord
-- ✅ 完全离线，无需联网
-- ✅ 非常轻量，几乎不占 CPU
-- ✅ 社区超火，模型丰富
-- 参考: https://github.com/dscripka/openwakeword
-
-### STT：Faster-Whisper
-- ✅ 比原版 Whisper 快 2-4 倍
-- ✅ 树莓派5 能跑 `small` 模型
-- ✅ 支持中文
-- 参考: https://github.com/guillaumekln/faster-whisper
-
-### TTS：Piper
-- ✅ 非常快！树莓派上实时生成
-- ✅ 音质好，有中文模型
-- ✅ 完全离线
-- 参考: https://github.com/rhasspy/piper
+- [项目概述](#项目概述)
+- [功能特性](#功能特性)
+- [硬件配置](#硬件配置)
+- [快速开始](#快速开始)
+- [文档索引](#文档索引)
 
 ---
 
-## 📦 目录结构
+## 项目概述
+
+Kid Supervisor v3 是一个专为儿童学习场景设计的智能监督系统。使用树莓派 5 + Camera Module 3 作为硬件平台，通过 MediaPipe 机器视觉技术实现实时的人脸检测、姿态分析和距离测量。
+
+### 设计目标
+
+1. **非侵入式监督**：纯视觉方案，无需佩戴设备
+2. **本地处理**：所有计算在树莓派本地完成，保护隐私
+3. **实时反馈**：实时检测并提醒不良学习姿势和过近距离
+4. **学习时长管理**：自动记录学习时长，提醒休息
+
+---
+
+## 功能特性
+
+### 已实现功能
+
+| 功能 | 说明 |
+|------|------|
+| 人脸检测 | 检测是否有人在屏幕前 |
+| 姿态估计 | MediaPipe Pose 检测 33 个人体关键点 |
+| 姿态分析 | 检测低头/驼背、肩膀不平、身体前倾等问题 |
+| 距离估算 | 基于人脸大小估算观看距离 |
+| 学习计时 | 自动记录学习会话时长 |
+| 智能提醒 | 不良姿态/过近距离/学习超时提醒 |
+| 防抖机制 | 存在检测 2 帧确认，离开检测 3 帧确认 |
+| 双进程架构 | 摄像头采集与推理分离，解决 Python 版本冲突 |
+
+### 技术亮点
+
+- **双进程架构**：解决 picamera2 (Python 3.13) 与 mediapipe (Python 3.11) 的版本冲突
+- **MediaPipe 优化**：树莓派 5 NEON 指令集优化，model_complexity=1 可达良好性能
+- **TCP Socket 通信**：轻量级进程间通信，低延迟帧传输
+
+---
+
+## 硬件配置
+
+| 组件 | 型号/规格 | 说明 |
+|------|-----------|------|
+| 主板 | 树莓派 5 8GB | 推荐 8GB 版本以流畅运行 MediaPipe |
+| 摄像头 | Camera Module 3 Wide | 广角摄像头，适合近距离场景 |
+| 存储 | MicroSD / SSD | 推荐 SSD 以获得更好的性能 |
+| 电源 | 5V 5A USB-C | 树莓派 5 官方电源 |
+
+---
+
+## 快速开始
+
+### 1. 环境准备
+
+```bash
+# 克隆或进入项目目录
+cd /home/mxin/.openclaw/workspace/kid_supervisor_v3
+
+# 设置 Python 3.11 虚拟环境
+python3 setup_venv.py
+```
+
+### 2. 启动系统
+
+```bash
+# 一键启动（推荐）
+./start.sh
+
+# 或使用 Python 直接启动
+/usr/bin/python3 main.py
+
+# 无头模式（无预览窗口）
+/usr/bin/python3 main.py --no-preview
+```
+
+### 3. 操作说明
+
+| 按键 | 功能 |
+|------|------|
+| `q` / `ESC` | 退出程序 |
+
+---
+
+## 文档索引
+
+详细文档请查看 `docs/` 目录：
+
+| 文档 | 说明 |
+|------|------|
+| [docs/requirements.md](docs/requirements.md) | 需求规格说明 |
+| [docs/architecture.md](docs/architecture.md) | 架构设计文档 |
+| [docs/technical-details.md](docs/technical-details.md) | 技术实现细节 |
+| [docs/deployment.md](docs/deployment.md) | 部署与配置指南 |
+| [docs/debug-log.md](docs/debug-log.md) | 开发调试记录 |
+
+---
+
+## 项目结构
 
 ```
 kid_supervisor_v3/
-├── ARCHITECTURE.md     # 详细架构设计
-├── README.md           # 本文件
-├── requirements.txt    # 依赖列表
-├── config/
-│   └── settings.yaml   # 配置文件
-└── src/
-    ├── vision/         # 视觉模块
-    │   └── pose_detector.py
-    ├── audio/          # 音频模块
-    │   ├── wake_word.py  # OpenWakeWord
-    │   ├── stt.py        # Faster-Whisper/Vosk
-    │   └── tts.py        # Piper/Edge-TTS
-    ├── supervision/    # 监督逻辑
-    ├── storage/        # 数据存储
-    └── bus/            # 事件总线
+├── main.py                    # 主启动器
+├── camera_server.py           # 摄像头服务器 (系统 Python 3.13)
+├── inference_client.py        # 推理客户端 (Python 3.11 venv)
+├── setup_venv.py              # 虚拟环境设置脚本
+├── start.sh                   # 一键启动脚本
+├── requirements-camera.txt    # 摄像头端依赖
+├── requirements-inference.txt # 推理端依赖
+├── src/
+│   ├── vision/
+│   │   └── pose_detector.py   # MediaPipe 姿态检测器
+│   ├── supervision.py         # 监督逻辑模块
+│   ├── preview_renderer.py    # 预览渲染器
+│   ├── camera.py              # 摄像头模块（旧版）
+│   ├── simple_detector.py     # 简单检测器（旧版）
+│   ├── notifier.py            # 通知模块（预留）
+│   └── audio/                 # 音频模块（预留）
+├── docs/                      # 文档目录
+├── archive/                   # 归档文件
+└── venv_311/                  # Python 3.11 虚拟环境
 ```
 
 ---
 
-## 🚀 快速开始（当前阶段 - 视觉优先）
+## 许可证
 
-你的硬件还没音频输入输出，先跑视觉部分：
-
-```bash
-cd /home/mxin/.openclaw/workspace/kid_supervisor_v3/
-
-# 安装依赖
-pip install opencv-python numpy mediapipe
-
-# 先测试 MediaPipe 能不能跑
-python -c "import mediapipe; print('MediaPipe OK!')"
-```
+本项目仅供学习和研究使用。
 
 ---
 
-## 📈 演进路线
-
-### Phase 1: 视觉监督 (现在)
-- ✅ MediaPipe Pose 检测
-- ✅ 坐姿/距离/时长统计
-- ✅ SQLite 持久化
-
-### Phase 2: 音频提醒 (加喇叭)
-- 安装 Piper TTS
-- 实现语音提醒 ("请坐好" / "离远点")
-
-### Phase 3: 完整对话 (加麦)
-- 安装 OpenWakeWord
-- 安装 Faster-Whisper
-- 实现唤醒 -> 对话 -> 技能处理
-
-### Phase 4: 锦上添花 (可选)
-- Web UI 看统计
-- MQTT 接入 Home Assistant
-- Docker 部署
-- YOLOv8-Pose 对比测试
-
----
-
-## 💡 为什么这个方案比之前好？
-
-| 维度 | v2 问题 | v3 改进 |
-|------|---------|---------|
-| **检测精度** | Haar 太粗糙 | MediaPipe 有真实关键点 |
-| **未来扩展** | Dummy 只是占位 | 直接预留了集成成熟方案的接口 |
-| **社区生态** | 自己造轮子 | 全是社区验证过的方案 |
-| **硬件利用** | 太保守，浪费 8G | 直接上 MediaPipe model_complexity=1 |
-
----
-
-## 📚 参考项目
-
-| 项目 | 用途 |
-|------|------|
-| google/mediapipe | 视觉检测 |
-| dscripka/openwakeword | 唤醒词 |
-| guillaumekln/faster-whisper | STT |
-| rhasspy/piper | TTS |
-| rhasspy/rhasspy | 完整语音助手参考 |
-| blakeblackshear/frigate | NVR 架构参考 |
+*最后更新：2026-06-01*
