@@ -1,0 +1,5 @@
+# 摄像头进程依赖 (系统 Python 3.13)
+# picamera2 通常树莓派系统已预装
+# 如果没有，可以用: sudo apt install python3-picamera2
+opencv-python>=4.8.0
+numpy>=1.24.0
