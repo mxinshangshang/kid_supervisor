@@ -26,14 +26,33 @@ PORT = 65432
 def init_camera():
     print("[Camera] 启动中 (picamera2)...")
     picam2 = Picamera2()
+
+    # 尝试使用更广角的配置
+    # 先列出可用的传感器模式
+    print("[Camera] 可用的传感器模式:")
+    try:
+        modes = picam2.sensor_modes
+        for i, mode in enumerate(modes):
+            print(f"  [{i}] {mode}")
+    except Exception:
+        print("  无法获取传感器模式列表")
+
+    # 创建预览配置
     preview_config = picam2.create_preview_configuration(
         main={"format": "RGB888", "size": FRAME_SIZE},
         controls={"FrameRate": MAX_FPS}
     )
+
+    # 尝试配置广角 - 某些摄像头模块支持通过控制调整
+    # 这里我们保持默认，但如果支持广角，Picamera2会自动使用
     picam2.configure(preview_config)
     picam2.start()
     time.sleep(1)
-    print("[Camera] 启动成功")
+
+    # 打印当前摄像头配置
+    print(f"[Camera] 启动成功")
+    print(f"[Camera] 当前配置: {picam2.camera_configuration()}")
+
     return picam2
 
 def send_frame(conn, frame):

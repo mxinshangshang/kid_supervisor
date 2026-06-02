@@ -93,8 +93,11 @@ class MediaPipePoseDetector:
         self._face_mesh_initialized = False
 
         # 人脸实际宽度（cm）用于距离估计
+        # 这些值需要根据你的摄像头来校准
         self.face_real_width_cm = 15.0
-        self.camera_focal_length = 600.0  # 可校准
+        self.camera_focal_length = 800.0  # 增加焦距值，适应更广角的摄像头
+        self.last_valid_distance = None  # 用于平滑距离读数
+        self.distance_alpha = 0.3  # 平滑因子
 
     def _init_face_mesh(self):
         if not self._face_mesh_initialized:
@@ -152,8 +155,10 @@ class MediaPipePoseDetector:
 
     def _analyze_pose_metrics(self, landmarks, frame_shape: Tuple[int, int, int]) -> PoseMetrics:
         """
-        分析姿态指标
-        参考：MediaPipe 官方姿态估计最佳实践
+        分析姿态指标 - 改进版
+        - 更宽松的阈值
+        - 支持侧身检测
+        - 更鲁棒的判断
         """
         h, w, _ = frame_shape
 
@@ -165,41 +170,73 @@ class MediaPipePoseDetector:
         def get_p(enum_val):
             return (lm[enum_val.value].x * w, lm[enum_val.value].y * h)
 
+        # 检查关键点可见性
+        def is_visible(enum_val):
+            return lm[enum_val.value].visibility > 0.5
+
         metrics = PoseMetrics()
 
-        # ========== 肩膀 ==========
+        # ========== 获取关键点 ==========
         left_shoulder = get_p(pose.LEFT_SHOULDER)
         right_shoulder = get_p(pose.RIGHT_SHOULDER)
-
-        # 肩膀水平差（判断歪身子）
-        shoulder_height_diff = abs(left_shoulder[1] - right_shoulder[1])
-        metrics.shoulder_level = shoulder_height_diff
-
-        if shoulder_height_diff > h * 0.05:
-            metrics.issues.append("肩膀不平")
-
-        # ========== 头部姿态（简化版） ==========
+        left_hip = get_p(pose.LEFT_HIP)
+        right_hip = get_p(pose.RIGHT_HIP)
         nose = get_p(pose.NOSE)
         left_ear = get_p(pose.LEFT_EAR)
         right_ear = get_p(pose.RIGHT_EAR)
 
-        # 鼻子比耳朵低很多 -> 低头
-        ear_avg_y = (left_ear[1] + right_ear[1]) / 2
-        if nose[1] > ear_avg_y + h * 0.03:
-            metrics.head_pitch = (nose[1] - ear_avg_y) / h * 100
-            metrics.issues.append("低头/驼背")
+        # ========== 检查关键点可见性 ==========
+        left_shoulder_vis = is_visible(pose.LEFT_SHOULDER)
+        right_shoulder_vis = is_visible(pose.RIGHT_SHOULDER)
+        left_hip_vis = is_visible(pose.LEFT_HIP)
+        right_hip_vis = is_visible(pose.RIGHT_HIP)
+        left_ear_vis = is_visible(pose.LEFT_EAR)
+        right_ear_vis = is_visible(pose.RIGHT_EAR)
 
-        # ========== 躯干前倾 ==========
-        left_hip = get_p(pose.LEFT_HIP)
-        right_hip = get_p(pose.RIGHT_HIP)
-        hip_avg_y = (left_hip[1] + right_hip[1]) / 2
-        shoulder_avg_y = (left_shoulder[1] + right_shoulder[1]) / 2
+        # ========== 肩膀检测（改进版） ==========
+        if left_shoulder_vis and right_shoulder_vis:
+            # 肩膀水平差（判断歪身子）
+            shoulder_height_diff = abs(left_shoulder[1] - right_shoulder[1])
+            metrics.shoulder_level = shoulder_height_diff
 
-        # 肩膀接近臀部 -> 可能趴着
-        if shoulder_avg_y > hip_avg_y - h * 0.15:
-            metrics.issues.append("身体前倾/趴着")
+            # 更宽松的阈值：从 0.05 增加到 0.08
+            if shoulder_height_diff > h * 0.08:
+                metrics.issues.append("Uneven Shoulders")
 
-        # ========== 整体评价 ==========
+        # ========== 头部姿态（改进版） ==========
+        # 判断是否正面朝向
+        front_facing = left_ear_vis and right_ear_vis
+        # 判断是否侧身（只有一个耳朵可见）
+        side_facing = (left_ear_vis and not right_ear_vis) or (right_ear_vis and not left_ear_vis)
+
+        if front_facing:
+            # 正面朝向：用鼻子和耳朵的关系
+            ear_avg_y = (left_ear[1] + right_ear[1]) / 2
+            # 更宽松的阈值：从 0.03 增加到 0.07
+            if nose[1] > ear_avg_y + h * 0.07:
+                metrics.head_pitch = (nose[1] - ear_avg_y) / h * 100
+                metrics.issues.append("Head Down/Slouching")
+        elif side_facing:
+            # 侧身朝向：用鼻子和肩膀的关系
+            shoulder_avg_y = (left_shoulder[1] + right_shoulder[1]) / 2 if (left_shoulder_vis and right_shoulder_vis) else (left_shoulder[1] if left_shoulder_vis else right_shoulder[1])
+            # 侧身时更宽松
+            if nose[1] > shoulder_avg_y - h * 0.1:
+                pass  # 侧身时不做太严格的低头判断
+        else:
+            # 无法判断朝向，不做头部姿态检查
+            pass
+
+        # ========== 躯干前倾检测（改进版） ==========
+        if (left_shoulder_vis or right_shoulder_vis) and (left_hip_vis or right_hip_vis):
+            # 使用可见的肩膀和髋部
+            visible_shoulder_y = left_shoulder[1] if left_shoulder_vis else right_shoulder[1]
+            visible_hip_y = left_hip[1] if left_hip_vis else right_hip[1]
+
+            # 更宽松的阈值：从 0.15 增加到 0.25
+            if visible_shoulder_y > visible_hip_y - h * 0.25:
+                metrics.issues.append("Leaning Forward")
+
+        # ========== 整体评价（更宽松） ==========
         if len(metrics.issues) == 0:
             metrics.overall_quality = PoseQuality.EXCELLENT
         elif len(metrics.issues) == 1:
@@ -227,10 +264,26 @@ class MediaPipePoseDetector:
         return (x, y, face_size, face_size)
 
     def _estimate_distance(self, face_width_pixel: int) -> float:
-        """相似三角形估计距离"""
+        """相似三角形估计距离 - 平滑版"""
         if face_width_pixel <= 0:
-            return None
-        return (self.face_real_width_cm * self.camera_focal_length) / face_width_pixel
+            return self.last_valid_distance
+
+        # 计算原始距离
+        raw_distance = (self.face_real_width_cm * self.camera_focal_length) / face_width_pixel
+
+        # 限制合理范围（30cm 到 150cm）
+        raw_distance = max(30.0, min(150.0, raw_distance))
+
+        # 平滑处理
+        if self.last_valid_distance is None:
+            self.last_valid_distance = raw_distance
+        else:
+            self.last_valid_distance = (
+                self.distance_alpha * raw_distance +
+                (1 - self.distance_alpha) * self.last_valid_distance
+            )
+
+        return self.last_valid_distance
 
     def close(self):
         """释放资源"""

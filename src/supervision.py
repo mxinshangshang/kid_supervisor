@@ -23,20 +23,20 @@ class Alert:
 
 
 class SupervisionConfig:
-    """监督配置"""
+    """监督配置 - 更宽松"""
     # 距离
-    too_close_threshold_cm: float = 35.0
-    too_close_duration: float = 3.0  # 持续多久才提醒
+    too_close_threshold_cm: float = 30.0  # 更近一点才提醒
+    too_close_duration: float = 5.0  # 更久一点才提醒
 
     # 坐姿
-    bad_posture_duration: float = 5.0  # 持续多久才提醒
+    bad_posture_duration: float = 8.0  # 更久一点才提醒
 
     # 学习时长
     max_study_duration: float = 45 * 60  # 45分钟
     rest_duration: float = 10 * 60  # 10分钟
 
     # 提醒冷却（避免刷屏）
-    alert_cooldown: float = 30.0
+    alert_cooldown: float = 45.0  # 冷却时间更长
 
 
 class StudySession:
