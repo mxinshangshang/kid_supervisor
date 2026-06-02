@@ -64,7 +64,7 @@ def send_frame(conn, frame_id, timestamp, frame):
     协议: [4B frame_id][8B timestamp][4B jpeg_len][jpeg_data]
     """
     try:
-        # RGB -> BGR for JPEG encoding
+        # picamera2 输出 RGB，cv2.imencode 需要 BGR，所以转换一下
         bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         _, jpeg_data = cv2.imencode('.jpg', bgr_frame,
                                     [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])

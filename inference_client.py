@@ -74,7 +74,7 @@ def recv_frame(conn):
                 return None, None, None, None
             data += packet
 
-        # JPEG 解码 - 直接得到 BGR 用于预览
+        # JPEG 解码 - 得到 BGR
         jpeg_array = np.frombuffer(data, dtype=np.uint8)
         bgr_frame = cv2.imdecode(jpeg_array, cv2.IMREAD_COLOR)
         if bgr_frame is None:
@@ -82,6 +82,7 @@ def recv_frame(conn):
 
         # 转 RGB 用于推理
         rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+
         return frame_id, timestamp, rgb_frame, bgr_frame
 
     except socket.timeout:
@@ -338,10 +339,11 @@ def main():
                     if alerts:
                         print(f"[Alert] {alerts[-1].message}")
                 else:
-                    # 预览模式 - 直接用接收的 BGR 帧
+                    # 预览模式 - 转 RGB 给 cv2.imshow（实测此环境下颜色才对）
                     if 'latest_frame_bgr' in locals() and latest_frame_bgr is not None:
+                        frame_for_preview = cv2.cvtColor(latest_frame_bgr, cv2.COLOR_BGR2RGB)
                         display_frame = renderer.render(
-                            frame=latest_frame_bgr,
+                            frame=frame_for_preview,
                             detection_result=render_result,
                             supervisor_state=supervisor_state,
                             alerts=alerts,
