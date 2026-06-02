@@ -278,8 +278,6 @@ kid_supervisor_v3/
 │   ├── technical-details.md
 │   ├── deployment.md
 │   └── debug-log.md
-├── archive/                   # 归档文件
-│   └── old_docs/
 └── venv_311/                  # Python 3.11 虚拟环境
 ```
 
