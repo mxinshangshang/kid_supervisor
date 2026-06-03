@@ -1,0 +1,86 @@
+camera:
+  width: 640
+  height: 480
+  fps: 20
+  jpeg_quality: 80
+  format: RGB888
+
+network:
+  host: 127.0.0.1
+  port: 65432
+  recv_timeout_s: 0.2
+  send_timeout_s: 5.0
+
+inference:
+  model_complexity: 1
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+  analyze_face: false
+  inference_fps: 10
+  display_fps: 15
+
+distance:
+  face_real_width_cm: 13.5
+  camera_focal_length: 820.0
+  min_cm: 25.0
+  max_cm: 120.0
+  smoothing_alpha: 0.35
+  edge_reject_ratio: 0.35
+
+pose:
+  camera_view: front
+  landmark_visibility_threshold: 0.5
+  posture_window_s: 4.0
+  posture_alert_threshold: 55.0
+  shoulder_diff_threshold: 0.08
+  head_down_threshold: 0.07
+  lean_forward_threshold: 0.22
+  head_forward_threshold: 0.12
+  desk_proximity_threshold: 0.18
+  weights:
+    uneven_shoulders: 20.0
+    head_down: 35.0
+    head_tilt: 10.0
+    leaning_forward: 30.0
+    head_forward: 30.0
+    desk_proximity: 35.0
+
+supervision:
+  too_close_threshold_cm: 30.0
+  too_close_duration_s: 5.0
+  distance_confidence_grace_s: 1.5
+  bad_posture_duration_s: 8.0
+  max_study_duration_min: 45
+  rest_duration_min: 10
+  alert_cooldown_s: 45.0
+  severity_mild_threshold: 30.0
+  severity_moderate_threshold: 60.0
+  severity_severe_threshold: 80.0
+  presence_enter_frames: 2
+  presence_exit_frames: 5
+
+thermal:
+  enabled: true
+  temp_warn_c: 65.0
+  temp_throttle_c: 75.0
+  temp_check_interval_s: 10.0
+  throttle_inference_fps: 8
+  throttle_model_complexity: 0
+
+process:
+  max_restart_attempts: 3
+  restart_backoff_base_s: 2
+  restart_reset_after_s: 60
+  status_log_interval_s: 10
+
+preview:
+  window_name: Kid Supervisor
+  show_help: true
+
+storage:
+  enabled: true
+  sqlite_path: data/kid_supervisor.db
+
+notifier:
+  console_enabled: true
+  audio_enabled: false

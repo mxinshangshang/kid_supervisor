@@ -9,20 +9,17 @@ import os
 import time
 import socket
 import struct
-import yaml
 import cv2
 import numpy as np
 from picamera2 import Picamera2
+from src.config import load_config
 
 # 确保使用系统库
 sys.path.insert(0, '/usr/lib/python3/dist-packages')
 
 # ===================== 加载配置 =====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
-
-with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-    CONFIG = yaml.safe_load(f)
+CONFIG = load_config(BASE_DIR)
 
 CAM = CONFIG["camera"]
 NET = CONFIG["network"]
@@ -37,13 +34,6 @@ PORT = NET["port"]
 def init_camera():
     print("[Camera] 启动中 (picamera2)...")
     picam2 = Picamera2()
-
-    print("[Camera] 可用的传感器模式:")
-    try:
-        for i, mode in enumerate(picam2.sensor_modes):
-            print(f"  [{i}] {mode}")
-    except Exception:
-        print("  无法获取传感器模式列表")
 
     preview_config = picam2.create_preview_configuration(
         main={"format": CAM.get("format", "RGB888"), "size": FRAME_SIZE},
@@ -66,22 +56,22 @@ def send_frame(conn, frame_id, timestamp, frame):
     try:
         # picamera2 输出 RGB，cv2.imencode 需要 BGR，所以转换一下
         bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        _, jpeg_data = cv2.imencode('.jpg', bgr_frame,
-                                    [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        ok, jpeg_data = cv2.imencode('.jpg', bgr_frame,
+                                     [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if not ok:
+            return False, 0
         jpeg_bytes = jpeg_data.tobytes()
 
         # 先发元数据: frame_id(4B) + timestamp(8B double) + jpeg_len(4B)
         header = struct.pack('!IdI', frame_id, timestamp, len(jpeg_bytes))
         conn.sendall(header)
-        # 再发 JPEG 数据
         conn.sendall(jpeg_bytes)
-        return True
-    except (BrokenPipeError, ConnectionResetError):
-        # 连接断开是正常的，不用每次都打印
-        return False
+        return True, len(header) + len(jpeg_bytes)
+    except (BrokenPipeError, ConnectionResetError, socket.timeout):
+        return False, 0
     except Exception as e:
         print(f"[Camera] 发送失败: {e}")
-        return False
+        return False, 0
 
 
 def main():
@@ -97,7 +87,6 @@ def main():
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.settimeout(NET.get("send_timeout_s", 30))
     sock.bind((HOST, PORT))
     sock.listen(1)
 
@@ -112,6 +101,7 @@ def main():
     try:
         while True:
             conn, addr = sock.accept()
+            conn.settimeout(NET.get("send_timeout_s", 5))
             print(f"[Camera] 已连接: {addr}")
 
             try:
@@ -120,11 +110,13 @@ def main():
                     frame = picam2.capture_array()
                     now = time.time()
 
-                    if send_frame(conn, frame_id, now, frame):
+                    sent_ok, bytes_sent = send_frame(conn, frame_id, now, frame)
+                    if sent_ok:
                         frame_id += 1
                         stats_frame_count += 1
-                        # 粗略估算发送字节 (header 16B + jpeg)
-                        stats_bytes_sent += 16 + 10000  # 估算
+                        stats_bytes_sent += bytes_sent
+                    else:
+                        break
 
                     # 帧间隔控制 - 更精确，避免睡过头
                     target_interval = 1.0 / MAX_FPS
@@ -143,7 +135,7 @@ def main():
                         stats_frame_count = 0
                         stats_bytes_sent = 0
 
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, socket.timeout):
                 print(f"[Camera] 连接断开，等待重连...")
             finally:
                 try:

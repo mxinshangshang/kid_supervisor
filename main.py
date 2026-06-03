@@ -9,16 +9,14 @@ import os
 import subprocess
 import signal
 import time
-import yaml
+from dataclasses import dataclass
+from src.config import load_config
 
 # 项目根目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ===================== 加载配置 =====================
-CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
-
-with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-    CONFIG = yaml.safe_load(f)
+CONFIG = load_config(BASE_DIR)
 
 PROC_CFG = CONFIG["process"]
 
@@ -32,6 +30,23 @@ INFERENCE_SCRIPT = os.path.join(BASE_DIR, "inference_client.py")
 
 MAX_RESTART = PROC_CFG.get("max_restart_attempts", 3)
 RESTART_BACKOFF_BASE = PROC_CFG.get("restart_backoff_base_s", 2)
+RESTART_RESET_AFTER = PROC_CFG.get("restart_reset_after_s", 60)
+STATUS_LOG_INTERVAL = PROC_CFG.get("status_log_interval_s", 10)
+
+
+@dataclass
+class ProcessState:
+    name: str
+    proc: subprocess.Popen | None = None
+    restart_count: int = 0
+    started_at: float = 0.0
+    last_exit_code: int | None = None
+
+    def is_running(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def uptime(self, now: float) -> float:
+        return max(0.0, now - self.started_at) if self.started_at else 0.0
 
 
 def check_venv():
@@ -57,16 +72,16 @@ def main():
     if not check_venv():
         return 1
 
-    camera_proc = None
-    inference_proc = None
-    restart_counts = {"camera": 0, "inference": 0}
+    camera_state = ProcessState(name="camera")
+    inference_state = ProcessState(name="inference")
     running = True
+    last_status_log = 0.0
 
     def cleanup(signum=None, frame=None):
         nonlocal running
         running = False
         print("\n[Main] 正在关闭子进程...")
-        for name, proc in [("camera", camera_proc), ("inference", inference_proc)]:
+        for name, proc in [("camera", camera_state.proc), ("inference", inference_state.proc)]:
             if proc and proc.poll() is None:
                 print(f"[Main] 终止 {name} (PID {proc.pid})")
                 proc.terminate()
@@ -81,19 +96,48 @@ def main():
     signal.signal(signal.SIGTERM, lambda s, f: cleanup(s, f))
 
     def start_camera():
-        nonlocal camera_proc
         print("[Main] 启动摄像头服务器 (系统 Python)...")
-        camera_proc = subprocess.Popen([SYSTEM_PYTHON, CAMERA_SCRIPT])
-        print(f"[Main] 摄像头服务器 PID: {camera_proc.pid}")
+        camera_state.proc = subprocess.Popen([SYSTEM_PYTHON, CAMERA_SCRIPT])
+        camera_state.started_at = time.time()
+        print(f"[Main] 摄像头服务器 PID: {camera_state.proc.pid}")
 
     def start_inference():
-        nonlocal inference_proc
         print("[Main] 启动推理客户端 (Python 3.11)...")
         args = [VENV_PYTHON, INFERENCE_SCRIPT]
         if no_preview:
             args.append("--no-preview")
-        inference_proc = subprocess.Popen(args)
-        print(f"[Main] 推理客户端 PID: {inference_proc.pid}")
+        inference_state.proc = subprocess.Popen(args)
+        inference_state.started_at = time.time()
+        print(f"[Main] 推理客户端 PID: {inference_state.proc.pid}")
+
+    def maybe_reset_restart_counter(state: ProcessState, now: float):
+        if state.restart_count > 0 and state.is_running() and state.uptime(now) >= RESTART_RESET_AFTER:
+            print(f"[Main] {state.name} 已稳定运行 {int(state.uptime(now))}s，重启计数清零")
+            state.restart_count = 0
+
+    def restart_or_exit(state: ProcessState, starter):
+        state.last_exit_code = state.proc.returncode if state.proc else None
+        state.restart_count += 1
+        print(f"[Main] {state.name} 退出 (code: {state.last_exit_code})")
+
+        if state.restart_count <= MAX_RESTART:
+            backoff = min(RESTART_BACKOFF_BASE * state.restart_count, 10)
+            print(f"[Main] {backoff}s 后重启 {state.name} ({state.restart_count}/{MAX_RESTART})")
+            time.sleep(backoff)
+            starter()
+            return None
+
+        print(f"[Main] {state.name} 重启次数超限 ({MAX_RESTART})，退出")
+        cleanup()
+        return 1
+
+    def log_status(now: float):
+        cam_status = f"up {int(camera_state.uptime(now))}s" if camera_state.is_running() else f"down rc={camera_state.last_exit_code}"
+        inf_status = f"up {int(inference_state.uptime(now))}s" if inference_state.is_running() else f"down rc={inference_state.last_exit_code}"
+        print(
+            f"[Main Status] camera={cam_status} restarts={camera_state.restart_count} | "
+            f"inference={inf_status} restarts={inference_state.restart_count}"
+        )
 
     # 初始启动
     start_camera()
@@ -105,44 +149,24 @@ def main():
     try:
         while running:
             time.sleep(0.5)
+            now = time.time()
 
-            # 检查摄像头进程
-            if camera_proc and camera_proc.poll() is not None:
-                rc = camera_proc.returncode
-                restart_counts["camera"] += 1
-                print(f"[Main] 摄像头服务器退出 (code: {rc})")
+            maybe_reset_restart_counter(camera_state, now)
+            maybe_reset_restart_counter(inference_state, now)
 
-                if restart_counts["camera"] <= MAX_RESTART:
-                    backoff = min(RESTART_BACKOFF_BASE * restart_counts["camera"], 10)
-                    print(f"[Main] {backoff}s 后重启摄像头 ({restart_counts['camera']}/{MAX_RESTART})")
-                    time.sleep(backoff)
-                    start_camera()
-                else:
-                    print(f"[Main] 摄像头服务器重启次数超限 ({MAX_RESTART})，退出")
-                    cleanup()
-                    return 1
+            if now - last_status_log >= STATUS_LOG_INTERVAL:
+                log_status(now)
+                last_status_log = now
 
-            # 检查推理进程
-            if inference_proc and inference_proc.poll() is not None:
-                rc = inference_proc.returncode
-                restart_counts["inference"] += 1
-                print(f"[Main] 推理客户端退出 (code: {rc})")
+            if camera_state.proc and camera_state.proc.poll() is not None:
+                rc = restart_or_exit(camera_state, start_camera)
+                if rc is not None:
+                    return rc
 
-                if restart_counts["inference"] <= MAX_RESTART:
-                    backoff = min(RESTART_BACKOFF_BASE * restart_counts["inference"], 10)
-                    print(f"[Main] {backoff}s 后重启推理 ({restart_counts['inference']}/{MAX_RESTART})")
-                    time.sleep(backoff)
-                    start_inference()
-                else:
-                    print(f"[Main] 推理客户端重启次数超限 ({MAX_RESTART})，退出")
-                    cleanup()
-                    return 1
-
-            # 成功运行一段时间后重置计数（防止累积触发退出）
-            if camera_proc and inference_proc:
-                if (camera_proc.poll() is None and inference_proc.poll() is None):
-                    # 两个进程都运行超过 30 秒，重置计数
-                    pass  # 简单起见不在这里做，保持计数
+            if inference_state.proc and inference_state.proc.poll() is not None:
+                rc = restart_or_exit(inference_state, start_inference)
+                if rc is not None:
+                    return rc
 
     finally:
         cleanup()

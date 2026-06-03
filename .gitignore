@@ -49,3 +49,7 @@ test_*.png
 
 # Big model files
 face_detector.caffemodel
+
+# patch
+*.patch
+*.diff
