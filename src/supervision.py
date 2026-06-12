@@ -80,6 +80,9 @@ class Supervisor:
         self.last_alert_time: Dict[AlertType, float] = {}
         self._posture_window: deque = deque()
         self._window_size_s = self.config.posture_window_s
+        # 新增：短暂丢失容忍状态
+        self._person_maybe_gone_since: Optional[float] = None
+        self._temporary_grace_period_s: float = 1.0  # 1秒内恢复不算离开
 
     def _update_posture_window(self, timestamp: float, score: float):
         self._posture_window.append((timestamp, score))

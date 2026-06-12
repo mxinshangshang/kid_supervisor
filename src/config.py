@@ -69,8 +69,8 @@ DEFAULT_CONFIG: Dict[str, Dict[str, Any]] = {
         "severity_mild_threshold": 30.0,
         "severity_moderate_threshold": 60.0,
         "severity_severe_threshold": 80.0,
-        "presence_enter_frames": 2,
-        "presence_exit_frames": 5,
+        "presence_enter_frames": 5,
+        "presence_exit_frames": 15,
     },
     "thermal": {
         "enabled": True,

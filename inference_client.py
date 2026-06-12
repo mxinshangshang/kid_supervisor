@@ -208,6 +208,9 @@ def main():
     person_detected = False
     person_counter = 0
     person_gone_counter = 0
+    # 新增：短暂丢失容忍状态
+    person_maybe_gone_since: float | None = None
+    temporary_grace_period_s: float = 1.0  # 1秒内恢复不算真离开
     alerts = []
     last_detection = DetectionResult(timestamp=time.time())
     last_detection_frame_id = None
@@ -253,7 +256,9 @@ def main():
 
             if frame_rgb is not None and now - last_inference_time >= inference_interval:
                 infer_start = time.time()
-                detection_result = detector.detect(frame_rgb, timestamp=now, analyze_face=INF.get("analyze_face", False), frame_is_rgb=True)
+                # 使用摄像头采集时间戳 frame_ts（如果可用），否则用 now
+                event_ts = frame_ts if frame_ts is not None else now
+                detection_result = detector.detect(frame_rgb, timestamp=event_ts, analyze_face=INF.get("analyze_face", False), frame_is_rgb=True)
                 detection_result.frame_id = frame_id
                 detection_result.source_timestamp = frame_ts
                 infer_ms = (time.time() - infer_start) * 1000.0
@@ -265,30 +270,49 @@ def main():
                 stats.total_infer_ms += infer_ms
 
                 if detection_result.success:
+                    # 检测到有人
                     person_gone_counter = 0
+                    # 如果之前在"可能离开"状态，现在恢复了
+                    if person_maybe_gone_since is not None:
+                        person_maybe_gone_since = None
+                    # 正常的进入检测
                     person_counter = min(person_counter + 1, supervisor.config.presence_enter_frames)
                     if person_counter >= supervisor.config.presence_enter_frames and not person_detected:
                         person_detected = True
                         notifier.send_info("检测到人脸，学习开始")
-                        supervisor.on_person_detected(now)
+                        supervisor.on_person_detected(event_ts)
                 else:
+                    # 没检测到有人
                     person_counter = 0
-                    person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
-                    if person_gone_counter >= supervisor.config.presence_exit_frames and person_detected:
-                        person_detected = False
-                        notifier.send_info("人脸消失")
-                        supervisor.on_person_left(now)
+                    if person_detected:
+                        # 已在学习状态，先进入"可能离开"的 grace period
+                        if person_maybe_gone_since is None:
+                            person_maybe_gone_since = event_ts
+                            person_gone_counter = 1
+                        else:
+                            person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
+                            # 检查是否超过 grace period 或帧数阈值
+                            grace_exceeded = (event_ts - person_maybe_gone_since) >= temporary_grace_period_s
+                            frames_exceeded = person_gone_counter >= supervisor.config.presence_exit_frames
+                            if grace_exceeded or frames_exceeded:
+                                person_detected = False
+                                person_maybe_gone_since = None
+                                notifier.send_info("人脸消失")
+                                supervisor.on_person_left(event_ts)
+                    else:
+                        # 不在学习状态，正常计数
+                        person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
 
                 alerts = []
                 if person_detected and detection_result.pose_metrics:
-                    posture_alert = supervisor.on_posture_update(detection_result.pose_metrics, now)
+                    posture_alert = supervisor.on_posture_update(detection_result.pose_metrics, event_ts)
                     if posture_alert:
                         alerts.append(posture_alert)
-                    distance_alert = supervisor.on_distance_update(detection_result.estimated_distance_cm, detection_result.distance_confidence, now)
+                    distance_alert = supervisor.on_distance_update(detection_result.estimated_distance_cm, detection_result.distance_confidence, event_ts)
                     if distance_alert:
                         alerts.append(distance_alert)
 
-                time_alert = supervisor.check_study_time(now)
+                time_alert = supervisor.check_study_time(event_ts)
                 if time_alert:
                     alerts.append(time_alert)
 
@@ -344,9 +368,11 @@ def main():
         except Exception:
             pass
         receiver_thread.join(timeout=1.0)
-        if storage and supervisor.current_session is not None:
-            supervisor.current_session.end_time = time.time()
-            storage.save_session(supervisor.current_session, supervisor.config.camera_view)
+        # 优雅结束当前会话（如果存在）
+        exit_ts = time.time()
+        if person_detected and supervisor.current_session is not None:
+            supervisor.on_person_left(exit_ts)
+        # 保存所有会话
         if storage:
             for session in supervisor.session_history:
                 storage.save_session(session, supervisor.config.camera_view)
