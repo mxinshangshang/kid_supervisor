@@ -36,16 +36,25 @@ class SupervisionConfig:
         config = config or {}
         sup = config.get("supervision", {})
         pose = config.get("pose", {})
+        dist = config.get("distance", {})
         self.camera_view: str = pose.get("camera_view", "front")
         self.too_close_threshold_cm: float = sup.get("too_close_threshold_cm", 30.0)
+        self.baseline_face_width_px: float = dist.get("baseline_face_width_px", 0) or 0
+        self.too_close_relative_scale: float = dist.get("too_close_relative_scale", 1.25)
+        self.prefer_relative_baseline: bool = dist.get("prefer_relative_baseline", False)
         self.too_close_duration: float = sup.get("too_close_duration_s", 5.0)
+        self.distance_recovery_s: float = sup.get("distance_recovery_s", 1.5)
         self.distance_confidence_grace_s: float = sup.get("distance_confidence_grace_s", 1.5)
+        self.presence_grace_s: float = sup.get("presence_grace_s", 2.0)
         self.bad_posture_duration: float = sup.get("bad_posture_duration_s", 8.0)
+        self.posture_recovery_s: float = sup.get("posture_recovery_s", 2.0)
         self.max_study_duration: float = sup.get("max_study_duration_min", 45) * 60
         self.rest_duration: float = sup.get("rest_duration_min", 10) * 60
         self.alert_cooldown: float = sup.get("alert_cooldown_s", 45.0)
         self.posture_window_s: float = pose.get("posture_window_s", 4.0)
         self.posture_alert_threshold: float = pose.get("posture_alert_threshold", 60)
+        self.min_quality_score: float = pose.get("min_quality_score", 0.55)
+        self.min_visible_keypoints: int = pose.get("min_visible_keypoints", 4)
         self.severity_mild: float = sup.get("severity_mild_threshold", 30)
         self.severity_moderate: float = sup.get("severity_moderate_threshold", 60)
         self.severity_severe: float = sup.get("severity_severe_threshold", 80)
@@ -76,13 +85,12 @@ class Supervisor:
         self.rest_start_time: Optional[float] = None
         self.bad_posture_start: Optional[float] = None
         self.too_close_start: Optional[float] = None
+        self._posture_recover_since: Optional[float] = None
+        self._too_close_recover_since: Optional[float] = None
         self._distance_low_confidence_since: Optional[float] = None
         self.last_alert_time: Dict[AlertType, float] = {}
         self._posture_window: deque = deque()
         self._window_size_s = self.config.posture_window_s
-        # 新增：短暂丢失容忍状态
-        self._person_maybe_gone_since: Optional[float] = None
-        self._temporary_grace_period_s: float = 1.0  # 1秒内恢复不算离开
 
     def _update_posture_window(self, timestamp: float, score: float):
         self._posture_window.append((timestamp, score))
@@ -124,9 +132,20 @@ class Supervisor:
         return None
 
     def on_posture_update(self, pose_metrics, timestamp: float) -> Optional[Alert]:
+        quality_score = getattr(pose_metrics, "quality_score", 1.0)
+        visible_keypoints = getattr(pose_metrics, "visible_keypoints", self.config.min_visible_keypoints)
+        min_visible_keypoints = self.config.min_visible_keypoints
+        if self.config.camera_view == "side":
+            min_visible_keypoints = min(min_visible_keypoints, 3)
+        if quality_score < self.config.min_quality_score or visible_keypoints < min_visible_keypoints:
+            self.bad_posture_start = None
+            self._posture_recover_since = None
+            return None
+
         self._update_posture_window(timestamp, pose_metrics.posture_score)
         avg_score = self._get_window_avg_score()
         if avg_score >= self.config.posture_alert_threshold:
+            self._posture_recover_since = None
             if self.bad_posture_start is None:
                 self.bad_posture_start = timestamp
             else:
@@ -143,10 +162,23 @@ class Supervisor:
                         details={"duration": duration, "avg_score": avg_score, "issues": issues},
                     )
         else:
-            self.bad_posture_start = None
+            if self.bad_posture_start is not None:
+                if self._posture_recover_since is None:
+                    self._posture_recover_since = timestamp
+                elif timestamp - self._posture_recover_since >= self.config.posture_recovery_s:
+                    self.bad_posture_start = None
+                    self._posture_recover_since = None
+            else:
+                self._posture_recover_since = None
         return None
 
-    def on_distance_update(self, distance_cm: Optional[float], confidence=None, timestamp: float = 0) -> Optional[Alert]:
+    def on_distance_update(
+        self,
+        distance_cm: Optional[float],
+        confidence=None,
+        timestamp: float = 0,
+        face_width_px: Optional[float] = None,
+    ) -> Optional[Alert]:
         if self.config.camera_view != "front":
             self.too_close_start = None
             self._distance_low_confidence_since = None
@@ -157,26 +189,52 @@ class Supervisor:
                 self._distance_low_confidence_since = timestamp
             elif timestamp - self._distance_low_confidence_since > self.config.distance_confidence_grace_s:
                 self.too_close_start = None
+                self._too_close_recover_since = None
             return None
 
         self._distance_low_confidence_since = None
-        if distance_cm is not None and distance_cm < self.config.too_close_threshold_cm:
+
+        relative_scale = None
+        if self.config.baseline_face_width_px > 0 and face_width_px is not None:
+            relative_scale = face_width_px / self.config.baseline_face_width_px
+
+        too_close_by_relative = (
+            relative_scale is not None and relative_scale >= self.config.too_close_relative_scale
+        )
+        too_close_by_absolute = distance_cm is not None and distance_cm < self.config.too_close_threshold_cm
+        if self.config.prefer_relative_baseline and relative_scale is not None:
+            is_too_close = too_close_by_relative
+        else:
+            is_too_close = too_close_by_relative or too_close_by_absolute
+
+        if is_too_close:
+            self._too_close_recover_since = None
             if self.too_close_start is None:
                 self.too_close_start = timestamp
             else:
                 duration = timestamp - self.too_close_start
                 if duration > self.config.too_close_duration and self._should_alert(AlertType.TOO_CLOSE, timestamp):
-                    severity = AlertSeverity.SEVERE if distance_cm < 20 else AlertSeverity.MODERATE
+                    severity = AlertSeverity.SEVERE if (relative_scale and relative_scale >= self.config.too_close_relative_scale * 1.25) or (distance_cm is not None and distance_cm < 20) else AlertSeverity.MODERATE
                     self._record_alert(AlertType.TOO_CLOSE, timestamp)
+                    distance_text = f"{distance_cm:.1f}cm" if distance_cm is not None else "relative"
+                    if relative_scale is not None:
+                        distance_text += f" / {relative_scale:.2f}x baseline"
                     return Alert(
                         alert_type=AlertType.TOO_CLOSE,
-                        message=f"Too Close ({severity.value}): {distance_cm:.1f}cm",
+                        message=f"Too Close ({severity.value}): {distance_text}",
                         timestamp=timestamp,
                         severity=severity,
-                        details={"duration": duration, "distance": distance_cm},
+                        details={"duration": duration, "distance": distance_cm, "relative_scale": relative_scale},
                     )
         else:
-            self.too_close_start = None
+            if self.too_close_start is not None:
+                if self._too_close_recover_since is None:
+                    self._too_close_recover_since = timestamp
+                elif timestamp - self._too_close_recover_since >= self.config.distance_recovery_s:
+                    self.too_close_start = None
+                    self._too_close_recover_since = None
+            else:
+                self._too_close_recover_since = None
         return None
 
     def check_study_time(self, timestamp: float) -> Optional[Alert]:

@@ -208,12 +208,10 @@ def main():
     person_detected = False
     person_counter = 0
     person_gone_counter = 0
-    # 新增：短暂丢失容忍状态
     person_maybe_gone_since: float | None = None
-    temporary_grace_period_s: float = 1.0  # 1秒内恢复不算真离开
+    presence_grace_s = supervisor.config.presence_grace_s
     alerts = []
     last_detection = DetectionResult(timestamp=time.time())
-    last_detection_frame_id = None
     last_inference_time = 0.0
     last_display_time = 0.0
     last_stats_log = time.time()
@@ -264,43 +262,35 @@ def main():
                 infer_ms = (time.time() - infer_start) * 1000.0
 
                 last_detection = detection_result
-                last_detection_frame_id = frame_id
                 last_inference_time = now
                 stats.frames_inferred += 1
                 stats.total_infer_ms += infer_ms
 
                 if detection_result.success:
-                    # 检测到有人
                     person_gone_counter = 0
-                    # 如果之前在"可能离开"状态，现在恢复了
                     if person_maybe_gone_since is not None:
                         person_maybe_gone_since = None
-                    # 正常的进入检测
                     person_counter = min(person_counter + 1, supervisor.config.presence_enter_frames)
                     if person_counter >= supervisor.config.presence_enter_frames and not person_detected:
                         person_detected = True
                         notifier.send_info("检测到人脸，学习开始")
                         supervisor.on_person_detected(event_ts)
                 else:
-                    # 没检测到有人
                     person_counter = 0
                     if person_detected:
-                        # 已在学习状态，先进入"可能离开"的 grace period
                         if person_maybe_gone_since is None:
                             person_maybe_gone_since = event_ts
                             person_gone_counter = 1
                         else:
                             person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
-                            # 检查是否超过 grace period 或帧数阈值
-                            grace_exceeded = (event_ts - person_maybe_gone_since) >= temporary_grace_period_s
+                            grace_exceeded = (event_ts - person_maybe_gone_since) >= presence_grace_s
                             frames_exceeded = person_gone_counter >= supervisor.config.presence_exit_frames
-                            if grace_exceeded or frames_exceeded:
+                            if grace_exceeded and frames_exceeded:
                                 person_detected = False
                                 person_maybe_gone_since = None
                                 notifier.send_info("人脸消失")
                                 supervisor.on_person_left(event_ts)
                     else:
-                        # 不在学习状态，正常计数
                         person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
 
                 alerts = []
@@ -308,7 +298,13 @@ def main():
                     posture_alert = supervisor.on_posture_update(detection_result.pose_metrics, event_ts)
                     if posture_alert:
                         alerts.append(posture_alert)
-                    distance_alert = supervisor.on_distance_update(detection_result.estimated_distance_cm, detection_result.distance_confidence, event_ts)
+                    face_width_px = detection_result.distance_bbox[2] if detection_result.distance_bbox else None
+                    distance_alert = supervisor.on_distance_update(
+                        detection_result.estimated_distance_cm,
+                        detection_result.distance_confidence,
+                        event_ts,
+                        face_width_px=face_width_px,
+                    )
                     if distance_alert:
                         alerts.append(distance_alert)
 
@@ -320,7 +316,15 @@ def main():
                     notifier.send_alert(alert)
 
             if now - last_display_time >= display_interval:
-                supervisor_state = {"current_session": supervisor.current_session, "is_resting": supervisor.is_resting}
+                temp_str = f"{current_temp:.1f}C" if current_temp is not None else "N/A"
+                avg_ms = stats.total_infer_ms / max(stats.frames_inferred, 1)
+                maybe_gone = person_maybe_gone_since is not None
+                supervisor_state = {
+                    "current_session": supervisor.current_session,
+                    "is_resting": supervisor.is_resting,
+                    "presence": f"P:{person_detected} maybe:{maybe_gone} in:{person_counter} out:{person_gone_counter}",
+                    "runtime": f"infer:{stats.frames_inferred} avg:{avg_ms:.0f}ms drop:{stats.frames_dropped} temp:{temp_str}",
+                }
                 if no_preview:
                     if now - last_stats_log >= PROC["status_log_interval_s"]:
                         elapsed = max(now - last_stats_log, 1e-6)

@@ -125,11 +125,10 @@ def main():
                         time.sleep(target_interval - elapsed_since_last)
                     last_frame_time = now
 
-                    # 每 10 秒输出一次统计
                     elapsed = now - stats_start
                     if elapsed >= 10.0:
                         fps = stats_frame_count / elapsed
-                        print(f"[Camera Stats] fps={fps:.1f}  frames={stats_frame_count}  "
+                        print(f"[Camera Stats] fps={fps:.1f} frames={stats_frame_count} "
                               f"avg_bytes/frame~={stats_bytes_sent // max(stats_frame_count, 1)}")
                         stats_start = now
                         stats_frame_count = 0

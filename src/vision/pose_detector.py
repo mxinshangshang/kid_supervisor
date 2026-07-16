@@ -35,6 +35,8 @@ _DEFAULT_POSE_CFG = {
     "head_forward_threshold": 0.12,
     "desk_proximity_threshold": 0.18,
     "landmark_visibility_threshold": 0.5,
+    "min_quality_score": 0.55,
+    "min_visible_keypoints": 4,
     "weights": {
         "uneven_shoulders": 20.0,
         "head_down": 35.0,
@@ -67,6 +69,8 @@ class PoseMetrics:
     torso_lean: float = 0.0
     shoulder_level: float = 0.0
     posture_score: float = 0.0
+    quality_score: float = 1.0
+    visible_keypoints: int = 0
     overall_quality: PoseQuality = PoseQuality.EXCELLENT
     issues: List[str] = field(default_factory=list)
 
@@ -228,6 +232,19 @@ class MediaPipePoseDetector:
         left_ear_vis = is_visible(pose.LEFT_EAR)
         right_ear_vis = is_visible(pose.RIGHT_EAR)
 
+        visibility_points = [
+            pose.NOSE,
+            pose.LEFT_EAR,
+            pose.RIGHT_EAR,
+            pose.LEFT_SHOULDER,
+            pose.RIGHT_SHOULDER,
+            pose.LEFT_HIP,
+            pose.RIGHT_HIP,
+        ]
+        visible_scores = [lm[p.value].visibility for p in visibility_points]
+        metrics.visible_keypoints = sum(1 for score in visible_scores if score > vis_thresh)
+        metrics.quality_score = sum(visible_scores) / len(visible_scores)
+
         issue_score = 0.0
         is_front = self.camera_view == "front"
         is_side = self.camera_view == "side"
@@ -264,7 +281,7 @@ class MediaPipePoseDetector:
                     issue_score += severity * weights.get("head_tilt", 10.0)
                     metrics.issues.append("Head Tilted")
 
-        if (left_shoulder_vis or right_shoulder_vis) and (left_hip_vis or right_hip_vis):
+        if is_side and (left_shoulder_vis or right_shoulder_vis) and (left_hip_vis or right_hip_vis):
             visible_shoulder_y = left_shoulder[1] if left_shoulder_vis else right_shoulder[1]
             visible_hip_y = left_hip[1] if left_hip_vis else right_hip[1]
             lean_threshold = h * self._pose_cfg["lean_forward_threshold"]
@@ -347,7 +364,10 @@ class MediaPipePoseDetector:
         dy = abs(face_cy - h / 2) / (h / 2)
         offset_ratio = max(dx, dy)
 
-        if offset_ratio < self.edge_reject_ratio:
+        face_size_ratio = fw / max(w, 1)
+        if face_size_ratio < 0.06:
+            confidence = DistanceConfidence.LOW
+        elif offset_ratio < self.edge_reject_ratio:
             confidence = DistanceConfidence.HIGH
         elif offset_ratio < self.edge_reject_ratio * 1.5:
             confidence = DistanceConfidence.MEDIUM

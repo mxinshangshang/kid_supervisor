@@ -118,6 +118,7 @@ pose:
 
 supervision:
   bad_posture_duration_s: 10.0
+  posture_recovery_s: 2.0
 ```
 
 ### 5.3 调整距离提醒
@@ -126,9 +127,12 @@ supervision:
 supervision:
   too_close_threshold_cm: 32.0
   too_close_duration_s: 5.0
+  distance_recovery_s: 1.5
 
 distance:
   edge_reject_ratio: 0.35
+  too_close_relative_scale: 1.25
+  prefer_relative_baseline: false
 ```
 
 ### 5.4 调整重启恢复策略

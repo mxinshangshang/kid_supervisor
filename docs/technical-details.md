@@ -160,12 +160,14 @@ pose:
 supervision:
   presence_enter_frames: 2
   presence_exit_frames: 5
+  presence_grace_s: 2.0
 ```
 
 说明：
 
 1. 连续检测到人达到阈值后进入学习状态
-2. 连续丢失达到阈值后退出学习状态
+2. 连续丢失达到阈值且超过宽限时间后退出学习状态
+3. 短时遮挡、低头、手部穿插不应立刻导致离开状态切换
 
 ---
 
@@ -179,8 +181,10 @@ supervision:
 例如：
 
 1. 姿态不良必须持续超过 `bad_posture_duration_s`
-2. 距离过近必须持续超过 `too_close_duration_s`
-3. 同类提醒在 `alert_cooldown_s` 内不会重复触发
+2. 姿态恢复后还需连续稳定超过 `posture_recovery_s` 才清除坏姿态状态
+3. 距离过近必须持续超过 `too_close_duration_s`
+4. 距离恢复后还需连续稳定超过 `distance_recovery_s` 才清除过近状态
+5. 同类提醒在 `alert_cooldown_s` 内不会重复触发
 
 对于低置信度距离读数，还加入了短宽限时间，避免一两帧波动直接打断距离累计。
 

@@ -53,3 +53,6 @@ face_detector.caffemodel
 # patch
 *.patch
 *.diff
+
+# Data directory (sqlite db etc.)
+data/
