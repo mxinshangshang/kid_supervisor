@@ -112,9 +112,11 @@ inference:
 ```yaml
 pose:
   posture_alert_threshold: 65
-  shoulder_diff_threshold: 0.10
-  head_down_threshold: 0.08
-  lean_forward_threshold: 0.25
+  shoulder_roll_degree_threshold: 8.0
+  head_down_ratio_threshold: 0.16
+  lean_forward_ratio_threshold: 0.12
+  head_forward_ratio_threshold: 0.12
+  desk_proximity_ratio_threshold: 0.18
 
 supervision:
   bad_posture_duration_s: 10.0
@@ -139,9 +141,6 @@ distance:
 
 ```yaml
 process:
-  max_restart_attempts: 3
-  restart_backoff_base_s: 2
-  restart_reset_after_s: 60
   status_log_interval_s: 10
 ```
 

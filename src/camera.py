@@ -12,7 +12,7 @@ from dataclasses import dataclass
 @dataclass
 class CameraConfig:
     width: int = 640
-    height: int = 360
+    height: int = 480
     fps: int = 10
 
 

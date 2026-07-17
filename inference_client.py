@@ -7,7 +7,14 @@ import struct
 import sys
 import threading
 import time
+import signal
 from dataclasses import dataclass
+from typing import Optional
+
+
+def sigterm_handler(signum, frame):
+    """处理SIGTERM信号，复用KeyboardInterrupt路径"""
+    raise KeyboardInterrupt()
 
 import cv2
 import numpy as np
@@ -66,6 +73,9 @@ class SocketState:
     sock: socket.socket | None = None
 
 
+_warned_cpu_temp_failure = False
+
+
 def recv_exact(conn: socket.socket, size: int) -> bytes:
     chunks = []
     remaining = size
@@ -90,11 +100,15 @@ def recv_frame(conn: socket.socket):
 
 
 def get_cpu_temp() -> float | None:
+    global _warned_cpu_temp_failure
     temp_path = "/sys/class/thermal/thermal_zone0/temp"
     try:
         with open(temp_path, "r", encoding="utf-8") as handle:
             return float(handle.read().strip()) / 1000.0
-    except Exception:
+    except Exception as exc:
+        if not _warned_cpu_temp_failure:
+            print(f"[Thermal] 无法读取 CPU 温度: {exc}")
+            _warned_cpu_temp_failure = True
         return None
 
 
@@ -126,6 +140,8 @@ def connect_camera_server(stop_event: threading.Event) -> socket.socket | None:
 
 
 def main():
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
     no_preview = "--no-preview" in sys.argv or "-n" in sys.argv
 
     print("=" * 60)
@@ -237,7 +253,7 @@ def main():
                         is_throttled = True
                         inference_interval = 1.0 / THERMAL["throttle_inference_fps"]
                         detector.set_model_complexity(THERMAL["throttle_model_complexity"])
-                    elif current_temp < THERMAL["temp_throttle_c"] - 5 and is_throttled:
+                    elif current_temp < THERMAL["temp_throttle_c"] - THERMAL.get("throttle_recover_margin_c", 5.0) and is_throttled:
                         print(f"[Thermal] CPU {current_temp:.1f}C, 恢复正常")
                         is_throttled = False
                         inference_interval = 1.0 / INF["inference_fps"]
@@ -254,7 +270,6 @@ def main():
 
             if frame_rgb is not None and now - last_inference_time >= inference_interval:
                 infer_start = time.time()
-                # 使用摄像头采集时间戳 frame_ts（如果可用），否则用 now
                 event_ts = frame_ts if frame_ts is not None else now
                 detection_result = detector.detect(frame_rgb, timestamp=event_ts, analyze_face=INF.get("analyze_face", False), frame_is_rgb=True)
                 detection_result.frame_id = frame_id
@@ -290,6 +305,9 @@ def main():
                                 person_maybe_gone_since = None
                                 notifier.send_info("人脸消失")
                                 supervisor.on_person_left(event_ts)
+                                # 会话结束即时保存
+                                if storage and supervisor.session_history:
+                                    storage.save_session(supervisor.session_history[-1], supervisor.config.camera_view)
                     else:
                         person_gone_counter = min(person_gone_counter + 1, supervisor.config.presence_exit_frames)
 
@@ -311,6 +329,10 @@ def main():
                 time_alert = supervisor.check_study_time(event_ts)
                 if time_alert:
                     alerts.append(time_alert)
+                    # 休息开始时会话已结束，即时保存
+                    from supervision import AlertType
+                    if time_alert.alert_type == AlertType.BREAK_NEEDED and storage and supervisor.session_history:
+                        storage.save_session(supervisor.session_history[-1], supervisor.config.camera_view)
 
                 for alert in alerts:
                     notifier.send_alert(alert)
@@ -355,6 +377,7 @@ def main():
                         mp_drawing=detector.mp_drawing,
                     )
                     if not renderer.show(display_frame):
+                        stop_event.set()
                         break
                 last_display_time = now
 
@@ -372,11 +395,9 @@ def main():
         except Exception:
             pass
         receiver_thread.join(timeout=1.0)
-        # 优雅结束当前会话（如果存在）
         exit_ts = time.time()
         if person_detected and supervisor.current_session is not None:
             supervisor.on_person_left(exit_ts)
-        # 保存所有会话
         if storage:
             for session in supervisor.session_history:
                 storage.save_session(session, supervisor.config.camera_view)

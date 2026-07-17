@@ -158,8 +158,8 @@ pose:
 
 ```yaml
 supervision:
-  presence_enter_frames: 2
-  presence_exit_frames: 5
+  presence_enter_frames: 5
+  presence_exit_frames: 15
   presence_grace_s: 2.0
 ```
 
@@ -204,6 +204,8 @@ supervision:
 2. 推理帧率降到 `throttle_inference_fps`
 3. 模型复杂度切换到 `throttle_model_complexity`
 4. 温度回落后恢复正常
+
+恢复迟滞通过 `thermal.throttle_recover_margin_c` 配置。
 
 ---
 

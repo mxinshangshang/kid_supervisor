@@ -29,7 +29,6 @@
 3. 增加配置校验，发现非法值时提前失败
 4. 增加以下关键配置：
    - `pose.camera_view`
-   - `process.restart_reset_after_s`
    - `supervision.presence_enter_frames`
    - `supervision.presence_exit_frames`
    - `supervision.distance_confidence_grace_s`
@@ -294,8 +293,7 @@ thermal:
   temp_throttle_c: 75.0
 
 process:
-  max_restart_attempts: 3
-  restart_reset_after_s: 60
+  status_log_interval_s: 10
 ```
 
 ### 5.2 正面机位默认
@@ -303,6 +301,11 @@ process:
 ```yaml
 pose:
   camera_view: front
+  shoulder_roll_degree_threshold: 8.0
+  head_down_ratio_threshold: 0.16
+  lean_forward_ratio_threshold: 0.12
+  head_forward_ratio_threshold: 0.12
+  desk_proximity_ratio_threshold: 0.18
 
 supervision:
   too_close_threshold_cm: 30.0

@@ -4,16 +4,18 @@ from supervision import Alert, AlertType
 
 
 class Notifier:
-    def __init__(self, console_enabled: bool = True, audio_enabled: bool = False):
+    def __init__(self, console_enabled: bool = True, audio_enabled: bool = False, tts=None):
         self.console_enabled = console_enabled
         self.audio_enabled = audio_enabled
-        self.tts = None
+        self.tts = tts
 
     def send_alert(self, alert: Alert):
         if self.console_enabled:
             self._print_alert(alert)
         if self.audio_enabled and self.tts:
             self._speak_alert(alert)
+        elif self.audio_enabled and self.console_enabled:
+            print("[TTS] audio_enabled 已开启，但未注入 TTS 实现")
 
     def send_info(self, message: str):
         if self.console_enabled:

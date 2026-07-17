@@ -26,17 +26,23 @@ distance:
   max_cm: 120.0
   smoothing_alpha: 0.35
   edge_reject_ratio: 0.35
+  # 可选相对距离基线：完成校准后填入正常坐姿的头部框宽度，0 表示禁用。
+  baseline_face_width_px: 0
+  too_close_relative_scale: 1.25
+  prefer_relative_baseline: false
 
 pose:
   camera_view: front
   landmark_visibility_threshold: 0.5
   posture_window_s: 4.0
   posture_alert_threshold: 55.0
-  shoulder_diff_threshold: 0.08
-  head_down_threshold: 0.07
-  lean_forward_threshold: 0.22
-  head_forward_threshold: 0.12
-  desk_proximity_threshold: 0.18
+  min_quality_score: 0.55
+  min_visible_keypoints: 4
+  shoulder_roll_degree_threshold: 8.0
+  head_down_ratio_threshold: 0.16
+  lean_forward_ratio_threshold: 0.12
+  head_forward_ratio_threshold: 0.12
+  desk_proximity_ratio_threshold: 0.18
   weights:
     uneven_shoulders: 20.0
     head_down: 35.0
@@ -47,9 +53,14 @@ pose:
 
 supervision:
   too_close_threshold_cm: 30.0
+  too_close_severe_distance_margin_cm: 5.0
+  too_close_severe_relative_multiplier: 1.25
   too_close_duration_s: 5.0
+  distance_recovery_s: 1.5
   distance_confidence_grace_s: 1.5
+  presence_grace_s: 2.0
   bad_posture_duration_s: 8.0
+  posture_recovery_s: 2.0
   max_study_duration_min: 45
   rest_duration_min: 10
   alert_cooldown_s: 45.0
@@ -63,19 +74,18 @@ thermal:
   enabled: true
   temp_warn_c: 65.0
   temp_throttle_c: 75.0
+  throttle_recover_margin_c: 5.0
   temp_check_interval_s: 10.0
   throttle_inference_fps: 8
   throttle_model_complexity: 0
 
 process:
-  max_restart_attempts: 3
-  restart_backoff_base_s: 2
-  restart_reset_after_s: 60
   status_log_interval_s: 10
 
 preview:
   window_name: Kid Supervisor
   show_help: true
+  show_debug_hud: true
 
 storage:
   enabled: true

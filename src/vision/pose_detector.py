@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import math
 import numpy as np
-import yaml
 
 try:
     import mediapipe as mp
@@ -29,11 +28,11 @@ _DEFAULT_DIST_CFG = {
 }
 _DEFAULT_POSE_CFG = {
     "camera_view": "front",
-    "shoulder_diff_threshold": 0.08,
-    "head_down_threshold": 0.07,
-    "lean_forward_threshold": 0.22,
-    "head_forward_threshold": 0.12,
-    "desk_proximity_threshold": 0.18,
+    "shoulder_roll_degree_threshold": 8.0,
+    "head_down_ratio_threshold": 0.16,
+    "lean_forward_ratio_threshold": 0.12,
+    "head_forward_ratio_threshold": 0.12,
+    "desk_proximity_ratio_threshold": 0.18,
     "landmark_visibility_threshold": 0.5,
     "min_quality_score": 0.55,
     "min_visible_keypoints": 4,
@@ -80,6 +79,7 @@ class DetectionResult:
     timestamp: float
     success: bool = False
     pose_landmarks: object = None
+    pose_world_landmarks: object = None
     face_landmarks: object = None
     face_bbox: Optional[Tuple[int, int, int, int]] = None
     estimated_distance_cm: Optional[float] = None
@@ -136,16 +136,8 @@ class MediaPipePoseDetector:
             self._pose_cfg = {**_DEFAULT_POSE_CFG, **config.get("pose", {})}
             return
 
-        try:
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            config_path = os.path.join(base_dir, "config.yaml")
-            with open(config_path, "r", encoding="utf-8") as handle:
-                file_config = yaml.safe_load(handle) or {}
-            self._dist_cfg = {**_DEFAULT_DIST_CFG, **file_config.get("distance", {})}
-            self._pose_cfg = {**_DEFAULT_POSE_CFG, **file_config.get("pose", {})}
-        except Exception:
-            self._dist_cfg = _DEFAULT_DIST_CFG.copy()
-            self._pose_cfg = _DEFAULT_POSE_CFG.copy()
+        self._dist_cfg = _DEFAULT_DIST_CFG.copy()
+        self._pose_cfg = _DEFAULT_POSE_CFG.copy()
 
     def _init_pose(self, model_complexity, smooth_landmarks, enable_segmentation, min_detection_confidence, min_tracking_confidence):
         self.pose = self.mp_pose.Pose(
@@ -182,6 +174,7 @@ class MediaPipePoseDetector:
         if pose_results.pose_landmarks:
             result.success = True
             result.pose_landmarks = pose_results.pose_landmarks
+            result.pose_world_landmarks = getattr(pose_results, "pose_world_landmarks", None)
             result.pose_metrics = self._analyze_pose_metrics(pose_results.pose_landmarks, frame.shape)
             result.face_bbox = self._estimate_face_bbox(pose_results.pose_landmarks, frame.shape, include_shoulders=True)
             result.distance_bbox = self._estimate_face_bbox(pose_results.pose_landmarks, frame.shape, include_shoulders=False)
@@ -249,64 +242,81 @@ class MediaPipePoseDetector:
         is_front = self.camera_view == "front"
         is_side = self.camera_view == "side"
 
+        def _safe_ratio(numerator: float, denominator: float) -> float:
+            return numerator / denominator if denominator and abs(denominator) > 1e-6 else 0.0
+
+        def _safe_angle(dx: float, dy: float) -> float:
+            return abs(math.degrees(math.atan2(abs(dy), abs(dx)))) if abs(dx) > 1e-6 or abs(dy) > 1e-6 else 0.0
+
+        shoulder_width_px = abs(right_shoulder[0] - left_shoulder[0])
+        ear_width_px = abs(right_ear[0] - left_ear[0])
+        head_width_px = ear_width_px if ear_width_px > 1 else shoulder_width_px
+
         if is_front and left_shoulder_vis and right_shoulder_vis:
-            shoulder_height_diff = abs(left_shoulder[1] - right_shoulder[1])
-            metrics.shoulder_level = shoulder_height_diff
-            threshold = h * self._pose_cfg["shoulder_diff_threshold"]
-            if shoulder_height_diff > threshold:
-                severity = min(1.0, (shoulder_height_diff - threshold) / threshold)
-                issue_score += severity * weights.get("uneven_shoulders", 20.0)
-                metrics.issues.append("Uneven Shoulders")
+            shoulder_roll_angle = _safe_angle(right_shoulder[0] - left_shoulder[0], right_shoulder[1] - left_shoulder[1])
+            metrics.shoulder_level = shoulder_roll_angle
 
         front_facing = left_ear_vis and right_ear_vis
         side_facing = (left_ear_vis and not right_ear_vis) or (right_ear_vis and not left_ear_vis)
 
         if is_front and front_facing:
-            ear_avg_y = (left_ear[1] + right_ear[1]) / 2
-            head_down_threshold = h * self._pose_cfg["head_down_threshold"]
-            if nose[1] > ear_avg_y + head_down_threshold:
-                deviation = (nose[1] - ear_avg_y - head_down_threshold) / head_down_threshold
+            nose_to_ear_ratio = _safe_ratio(nose[1] - ((left_ear[1] + right_ear[1]) / 2), max(head_width_px, 1.0))
+            head_down_threshold = self._pose_cfg["head_down_ratio_threshold"]
+            if nose_to_ear_ratio > head_down_threshold:
+                deviation = (nose_to_ear_ratio - head_down_threshold) / head_down_threshold
                 severity = min(1.0, deviation)
-                metrics.head_pitch = deviation * 50
+                metrics.head_pitch = nose_to_ear_ratio * 100
                 issue_score += severity * weights.get("head_down", 35.0)
                 metrics.issues.append("Head Down")
 
             ear_dx = right_ear[0] - left_ear[0]
             ear_dy = right_ear[1] - left_ear[1]
-            if abs(ear_dx) > 1:
-                roll_angle = abs(ear_dy / ear_dx) * 100
-                metrics.head_roll = roll_angle
-                if roll_angle > 15:
-                    severity = min(1.0, (roll_angle - 15) / 20)
-                    issue_score += severity * weights.get("head_tilt", 10.0)
-                    metrics.issues.append("Head Tilted")
+            roll_angle = _safe_angle(ear_dx, ear_dy)
+            metrics.head_roll = roll_angle
+            if roll_angle > 12.0:
+                severity = min(1.0, (roll_angle - 12.0) / 18.0)
+                issue_score += severity * weights.get("head_tilt", 10.0)
+                metrics.issues.append("Head Tilted")
+
+            shoulder_roll_threshold = self._pose_cfg["shoulder_roll_degree_threshold"]
+            if shoulder_roll_angle > shoulder_roll_threshold:
+                severity = min(1.0, (shoulder_roll_angle - shoulder_roll_threshold) / shoulder_roll_threshold)
+                issue_score += severity * weights.get("uneven_shoulders", 20.0)
+                if "Uneven Shoulders" not in metrics.issues:
+                    metrics.issues.append("Uneven Shoulders")
+
+            lean_ratio = _safe_ratio(abs(nose[0] - ((left_shoulder[0] + right_shoulder[0]) / 2)), shoulder_width_px)
+            if lean_ratio > self._pose_cfg["lean_forward_ratio_threshold"]:
+                severity = min(1.0, (lean_ratio - self._pose_cfg["lean_forward_ratio_threshold"]) / self._pose_cfg["lean_forward_ratio_threshold"])
+                issue_score += severity * weights.get("leaning_forward", 30.0)
+                if "Leaning Forward" not in metrics.issues:
+                    metrics.issues.append("Leaning Forward")
 
         if is_side and (left_shoulder_vis or right_shoulder_vis) and (left_hip_vis or right_hip_vis):
-            visible_shoulder_y = left_shoulder[1] if left_shoulder_vis else right_shoulder[1]
-            visible_hip_y = left_hip[1] if left_hip_vis else right_hip[1]
-            lean_threshold = h * self._pose_cfg["lean_forward_threshold"]
-            if visible_shoulder_y > visible_hip_y - lean_threshold:
-                deviation = (visible_shoulder_y - (visible_hip_y - lean_threshold)) / lean_threshold
-                severity = min(1.0, deviation)
-                metrics.torso_lean = deviation * 50
+            visible_shoulder = left_shoulder if left_shoulder_vis else right_shoulder
+            visible_hip = left_hip if left_hip_vis else right_hip
+            torso_dx = visible_shoulder[0] - visible_hip[0]
+            torso_dy = visible_hip[1] - visible_shoulder[1]
+            torso_angle = abs(math.degrees(math.atan2(abs(torso_dx), abs(torso_dy)))) if abs(torso_dx) > 1e-6 or abs(torso_dy) > 1e-6 else 0.0
+            metrics.torso_lean = torso_angle
+            if torso_angle > 18.0:
+                severity = min(1.0, (torso_angle - 18.0) / 20.0)
                 issue_score += severity * weights.get("leaning_forward", 30.0)
                 metrics.issues.append("Leaning Forward")
 
         if is_side and side_facing and (left_shoulder_vis or right_shoulder_vis):
             visible_shoulder_x = left_shoulder[0] if left_shoulder_vis else right_shoulder[0]
-            head_forward_threshold = w * self._pose_cfg.get("head_forward_threshold", 0.12)
-            head_forward_px = abs(nose[0] - visible_shoulder_x)
-            if head_forward_px > head_forward_threshold:
-                deviation = (head_forward_px - head_forward_threshold) / head_forward_threshold
-                severity = min(1.0, deviation)
+            shoulder_dx = abs(nose[0] - visible_shoulder_x)
+            head_forward_ratio = _safe_ratio(shoulder_dx, shoulder_width_px)
+            if head_forward_ratio > self._pose_cfg["head_forward_ratio_threshold"]:
+                severity = min(1.0, (head_forward_ratio - self._pose_cfg["head_forward_ratio_threshold"]) / self._pose_cfg["head_forward_ratio_threshold"])
                 issue_score += severity * weights.get("head_forward", 30.0)
                 metrics.issues.append("Head Forward")
 
             shoulder_y = left_shoulder[1] if left_shoulder_vis else right_shoulder[1]
-            desk_threshold = h * self._pose_cfg.get("desk_proximity_threshold", 0.18)
-            if nose[1] > shoulder_y + desk_threshold:
-                deviation = (nose[1] - shoulder_y - desk_threshold) / desk_threshold
-                severity = min(1.0, deviation)
+            desk_ratio = _safe_ratio(nose[1] - shoulder_y, shoulder_width_px)
+            if desk_ratio > self._pose_cfg["desk_proximity_ratio_threshold"]:
+                severity = min(1.0, (desk_ratio - self._pose_cfg["desk_proximity_ratio_threshold"]) / self._pose_cfg["desk_proximity_ratio_threshold"])
                 issue_score += severity * weights.get("desk_proximity", 35.0)
                 metrics.issues.append("Too Close To Desk")
 
@@ -376,6 +386,9 @@ class MediaPipePoseDetector:
 
         raw_distance = (self.face_real_width_cm * self.camera_focal_length) / fw
         raw_distance = max(self.distance_min, min(self.distance_max, raw_distance))
+
+        if confidence == DistanceConfidence.LOW:
+            return self.last_valid_distance, confidence
 
         if self.last_valid_distance is None:
             self.last_valid_distance = raw_distance

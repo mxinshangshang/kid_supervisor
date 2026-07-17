@@ -223,5 +223,8 @@ class PreviewRenderer:
             try:
                 cv2.destroyWindow(self.window_name)
                 cv2.destroyAllWindows()
+                # 处理一下事件队列，确保窗口完全关闭
+                for _ in range(5):
+                    cv2.waitKey(1)
             except Exception:
                 pass

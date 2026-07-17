@@ -9,10 +9,16 @@ import os
 import time
 import socket
 import struct
+import signal
 import cv2
 import numpy as np
 from picamera2 import Picamera2
 from src.config import load_config
+
+
+def sigterm_handler(signum, frame):
+    """处理SIGTERM信号，复用KeyboardInterrupt路径"""
+    raise KeyboardInterrupt()
 
 # 确保使用系统库
 sys.path.insert(0, '/usr/lib/python3/dist-packages')
@@ -75,6 +81,8 @@ def send_frame(conn, frame_id, timestamp, frame):
 
 
 def main():
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
     print("=" * 60)
     print("Kid Supervisor - 摄像头服务器")
     print(f"Python: {sys.version}")
@@ -91,6 +99,7 @@ def main():
     sock.listen(1)
 
     print(f"\n[Camera] 等待推理进程连接...")
+    print("[Camera] 当前为单客户端模式，后连接者需等待前一个连接释放")
 
     # 性能统计
     frame_id = 0
@@ -103,6 +112,12 @@ def main():
             conn, addr = sock.accept()
             conn.settimeout(NET.get("send_timeout_s", 5))
             print(f"[Camera] 已连接: {addr}")
+            conn_stats_start = time.time()
+            conn_frame_count = 0
+            conn_bytes_sent = 0
+            stats_start = conn_stats_start
+            stats_frame_count = 0
+            stats_bytes_sent = 0
 
             try:
                 last_frame_time = time.time()
@@ -115,6 +130,8 @@ def main():
                         frame_id += 1
                         stats_frame_count += 1
                         stats_bytes_sent += bytes_sent
+                        conn_frame_count += 1
+                        conn_bytes_sent += bytes_sent
                     else:
                         break
 
@@ -141,6 +158,13 @@ def main():
                     conn.close()
                 except Exception:
                     pass
+                if conn_frame_count > 0:
+                    duration = max(time.time() - conn_stats_start, 1e-6)
+                    print(
+                        f"[Camera] 本次连接发送 {conn_frame_count} 帧，"
+                        f"平均 {conn_frame_count / duration:.1f} fps，"
+                        f"平均字节数 {conn_bytes_sent // conn_frame_count}"
+                    )
 
     except KeyboardInterrupt:
         print("\n\n[Camera] 收到退出信号")

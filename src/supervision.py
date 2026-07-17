@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from vision.pose_detector import DistanceConfidence
+try:
+    from vision.pose_detector import DistanceConfidence
+except Exception:
+    class DistanceConfidence(Enum):
+        HIGH = "high"
+        MEDIUM = "medium"
+        LOW = "low"
 
 
 class AlertType(Enum):
@@ -39,6 +45,8 @@ class SupervisionConfig:
         dist = config.get("distance", {})
         self.camera_view: str = pose.get("camera_view", "front")
         self.too_close_threshold_cm: float = sup.get("too_close_threshold_cm", 30.0)
+        self.too_close_severe_distance_margin_cm: float = sup.get("too_close_severe_distance_margin_cm", 5.0)
+        self.too_close_severe_relative_multiplier: float = sup.get("too_close_severe_relative_multiplier", 1.25)
         self.baseline_face_width_px: float = dist.get("baseline_face_width_px", 0) or 0
         self.too_close_relative_scale: float = dist.get("too_close_relative_scale", 1.25)
         self.prefer_relative_baseline: bool = dist.get("prefer_relative_baseline", False)
@@ -98,6 +106,9 @@ class Supervisor:
         while self._posture_window and self._posture_window[0][0] < cutoff:
             self._posture_window.popleft()
 
+    def _clear_posture_window(self):
+        self._posture_window.clear()
+
     def _get_window_avg_score(self) -> float:
         if not self._posture_window:
             return 0.0
@@ -129,6 +140,9 @@ class Supervisor:
         self.bad_posture_start = None
         self.too_close_start = None
         self._distance_low_confidence_since = None
+        self._posture_recover_since = None
+        self._too_close_recover_since = None
+        self._clear_posture_window()
         return None
 
     def on_posture_update(self, pose_metrics, timestamp: float) -> Optional[Alert]:
@@ -214,7 +228,14 @@ class Supervisor:
             else:
                 duration = timestamp - self.too_close_start
                 if duration > self.config.too_close_duration and self._should_alert(AlertType.TOO_CLOSE, timestamp):
-                    severity = AlertSeverity.SEVERE if (relative_scale and relative_scale >= self.config.too_close_relative_scale * 1.25) or (distance_cm is not None and distance_cm < 20) else AlertSeverity.MODERATE
+                    severe_by_absolute = distance_cm is not None and distance_cm <= (
+                        self.config.too_close_threshold_cm - self.config.too_close_severe_distance_margin_cm
+                    )
+                    severe_by_relative = (
+                        relative_scale is not None
+                        and relative_scale >= self.config.too_close_relative_scale * self.config.too_close_severe_relative_multiplier
+                    )
+                    severity = AlertSeverity.SEVERE if (severe_by_absolute or severe_by_relative) else AlertSeverity.MODERATE
                     self._record_alert(AlertType.TOO_CLOSE, timestamp)
                     distance_text = f"{distance_cm:.1f}cm" if distance_cm is not None else "relative"
                     if relative_scale is not None:
@@ -262,7 +283,9 @@ class Supervisor:
         return None
 
     def _should_alert(self, alert_type: AlertType, timestamp: float) -> bool:
-        last_time = self.last_alert_time.get(alert_type, 0)
+        last_time = self.last_alert_time.get(alert_type)
+        if last_time is None:
+            return True
         return timestamp - last_time > self.config.alert_cooldown
 
     def _record_alert(self, alert_type: AlertType, timestamp: float):
