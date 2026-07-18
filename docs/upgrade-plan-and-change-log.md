@@ -366,3 +366,73 @@ python -m compileall main.py camera_server.py inference_client.py src calibrate_
 2. 在树莓派实机分别测试 `front` / `side`
 3. 观察实际误报情况后微调 `pose.weights` 与阈值
 4. 若需要更高距离精度，再考虑引入轻量真实人脸检测框替换当前头部关键点估计
+
+---
+
+## 9. v4.2 补充改动（2026-07-18）
+
+### 9.1 新增诊断日志模块
+
+新增文件：`src/diagnostic_log.py`
+
+功能：
+1. 记录每帧完整算法结果（检测、姿势、距离、状态）
+2. 记录告警事件（含照片路径）
+3. 记录学习会话状态变化
+4. 自动清理 3 天前旧数据
+5. 提供查询接口用于回溯问题
+
+### 9.2 照片颜色修复
+
+修改文件：`inference_client.py`
+
+问题：
+1. 保存照片时进行了重复的颜色空间转换
+2. 导致飞书通知中的照片颜色反转
+
+修复：
+1. 统一 `save_photo()` 函数，直接保存原始 RGB 帧
+2. 移除多余的颜色转换
+
+### 9.3 学习开始/结束拍照
+
+修改文件：
+- `inference_client.py`
+- `src/notifier.py`
+
+改进：
+1. 检测到人进入时拍照并发送飞书通知
+2. 检测到人离开时拍照并发送飞书通知
+3. 告警时同样拍照留存
+
+### 9.4 告警消息优化
+
+修改文件：
+- `src/vision/pose_detector.py`
+- `src/supervision.py`
+
+改进：
+1. 直接用中文生成问题标签（不再翻译）
+2. `PoseMetrics` 新增 `issue_details` 保存每个问题得分
+3. 告警时只显示得分最高的一个问题
+4. 消息格式：`{问题} ({严重度})`，例如：`低头 (中度)`
+
+### 9.5 摄像头翻转配置
+
+修改文件：
+- `camera_server.py`
+- `config.yaml`
+
+新增配置：
+```yaml
+camera:
+  camera_num: 0
+  hflip: false
+  vflip: true
+```
+
+### 9.6 新增工具
+
+新增文件：`list_cameras.py`
+
+功能：列出可用摄像头，方便选择 `camera_num`

@@ -4,6 +4,9 @@ camera:
   fps: 20
   jpeg_quality: 80
   format: RGB888
+  camera_num: 0
+  hflip: false
+  vflip: true
 
 network:
   host: 127.0.0.1
@@ -94,3 +97,7 @@ storage:
 notifier:
   console_enabled: true
   audio_enabled: false
+  feishu_enabled: true
+  feishu_webhook: ""
+  feishu_secret: ""
+  alert_cooldown_s: 45

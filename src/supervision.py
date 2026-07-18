@@ -168,12 +168,45 @@ class Supervisor:
                     severity = self._score_to_severity(avg_score)
                     self._record_alert(AlertType.POSTURE_BAD, timestamp)
                     issues = pose_metrics.issues if pose_metrics else []
+                    issue_details = getattr(pose_metrics, "issue_details", {}) if pose_metrics else {}
+
+                    # 找出得分最高的问题
+                    main_issue = None
+                    max_score = 0
+                    for issue, detail in issue_details.items():
+                        if detail.get("score", 0) > max_score:
+                            max_score = detail.get("score", 0)
+                            main_issue = issue
+
+                    # 如果没找到但有 issues，取第一个
+                    if not main_issue and issues:
+                        main_issue = issues[0]
+
+                    severity_translations = {
+                        "mild": "轻度",
+                        "moderate": "中度",
+                        "severe": "重度",
+                    }
+                    severity_str = severity_translations.get(severity.value, severity.value)
+
+                    # 构建告警消息 - 只报最严重的问题
+                    if main_issue:
+                        message = f"{main_issue} ({severity_str})"
+                    else:
+                        message = f"姿势异常 ({severity_str})"
+
                     return Alert(
                         alert_type=AlertType.POSTURE_BAD,
-                        message=f"Bad Posture ({severity.value}): {', '.join(issues)}",
+                        message=message,
                         timestamp=timestamp,
                         severity=severity,
-                        details={"duration": duration, "avg_score": avg_score, "issues": issues},
+                        details={
+                            "duration": duration,
+                            "avg_score": avg_score,
+                            "issues": issues,
+                            "issue_details": issue_details,
+                            "main_issue": main_issue
+                        },
                     )
         else:
             if self.bad_posture_start is not None:
@@ -237,12 +270,18 @@ class Supervisor:
                     )
                     severity = AlertSeverity.SEVERE if (severe_by_absolute or severe_by_relative) else AlertSeverity.MODERATE
                     self._record_alert(AlertType.TOO_CLOSE, timestamp)
-                    distance_text = f"{distance_cm:.1f}cm" if distance_cm is not None else "relative"
+                    distance_text = f"{distance_cm:.1f}厘米" if distance_cm is not None else "相对距离"
                     if relative_scale is not None:
-                        distance_text += f" / {relative_scale:.2f}x baseline"
+                        distance_text += f" / {relative_scale:.2f}倍基准"
+                    severity_translations = {
+                        "mild": "轻度",
+                        "moderate": "中度",
+                        "severe": "重度",
+                    }
+                    severity_str = severity_translations.get(severity.value, severity.value)
                     return Alert(
                         alert_type=AlertType.TOO_CLOSE,
-                        message=f"Too Close ({severity.value}): {distance_text}",
+                        message=f"距离太近 ({severity_str}): {distance_text}",
                         timestamp=timestamp,
                         severity=severity,
                         details={"duration": duration, "distance": distance_cm, "relative_scale": relative_scale},
@@ -264,7 +303,7 @@ class Supervisor:
                 self.is_resting = False
                 self.rest_start_time = None
                 self._record_alert(AlertType.BREAK_OVER, timestamp)
-                return Alert(AlertType.BREAK_OVER, "Break Over!", timestamp, AlertSeverity.MILD)
+                return Alert(AlertType.BREAK_OVER, "休息结束，可以继续学习了！", timestamp, AlertSeverity.MILD)
         elif self.current_session and self.current_session.duration > self.config.max_study_duration:
             if self._should_alert(AlertType.BREAK_NEEDED, timestamp):
                 self.is_resting = True
@@ -275,7 +314,7 @@ class Supervisor:
                 self._record_alert(AlertType.BREAK_NEEDED, timestamp)
                 return Alert(
                     AlertType.BREAK_NEEDED,
-                    f"Time for a break! Studied {(self.session_history[-1].duration) / 60:.0f} min",
+                    f"该休息了！已学习 {(self.session_history[-1].duration) / 60:.0f} 分钟",
                     timestamp,
                     AlertSeverity.SEVERE,
                     {"study_duration": self.session_history[-1].duration},

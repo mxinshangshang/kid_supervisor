@@ -43,6 +43,7 @@ try:
     from storage import SessionStorage
     from supervision import Supervisor, SupervisionConfig
     from vision.pose_detector import DetectionResult, MediaPipePoseDetector
+    from diagnostic_log import DiagnosticLogger
 
     MODULES_READY = True
 except ImportError as exc:
@@ -139,6 +140,20 @@ def connect_camera_server(stop_event: threading.Event) -> socket.socket | None:
     return None
 
 
+def save_photo(frame_rgb, filename):
+    """统一的保存照片函数 - 确保颜色正常"""
+    try:
+        temp_dir = os.path.join(base_dir, "data")
+        os.makedirs(temp_dir, exist_ok=True)
+        photo_path = os.path.join(temp_dir, filename)
+        # 直接保存 RGB 帧 - 已验证学习开始照片这样保存是正常的
+        cv2.imwrite(photo_path, frame_rgb)
+        return photo_path
+    except Exception as e:
+        print(f"[Warn] 保存照片失败 {filename}: {e}")
+        return None
+
+
 def main():
     signal.signal(signal.SIGTERM, sigterm_handler)
 
@@ -165,8 +180,14 @@ def main():
     )
     supervisor = Supervisor(SupervisionConfig(CONFIG))
     renderer = PreviewRenderer(enabled=not no_preview, config=CONFIG)
-    notifier = Notifier(NOTIFIER.get("console_enabled", True), NOTIFIER.get("audio_enabled", False))
+    notifier = Notifier(NOTIFIER)
     storage = SessionStorage(os.path.join(base_dir, STORAGE["sqlite_path"])) if STORAGE.get("enabled") else None
+    # 初始化维测日志记录器 - 保留3天
+    diagnostic_log = DiagnosticLogger(
+        os.path.join(base_dir, "data", "diagnostic_logs.db"),
+        retention_days=3
+    )
+    print("[Inference] 维测日志已启用，保留3天")
 
     stop_event = threading.Event()
     socket_state = SocketState(sock=connect_camera_server(stop_event))
@@ -288,8 +309,19 @@ def main():
                     person_counter = min(person_counter + 1, supervisor.config.presence_enter_frames)
                     if person_counter >= supervisor.config.presence_enter_frames and not person_detected:
                         person_detected = True
-                        notifier.send_info("检测到人脸，学习开始")
+                        # 保存学习开始照片
+                        study_start_image = save_photo(frame_rgb, "study_start.jpg") if frame_rgb is not None else None
+                        notifier.send_study_start(event_ts, study_start_image)
                         supervisor.on_person_detected(event_ts)
+                        # 记录学习开始事件
+                        try:
+                            diagnostic_log.log_session_event(
+                                timestamp=event_ts,
+                                event_type="start",
+                                details={"photo_path": study_start_image}
+                            )
+                        except Exception as e:
+                            pass
                 else:
                     person_counter = 0
                     if person_detected:
@@ -303,8 +335,30 @@ def main():
                             if grace_exceeded and frames_exceeded:
                                 person_detected = False
                                 person_maybe_gone_since = None
-                                notifier.send_info("人脸消失")
+                                # 获取即将结束的会话时长
+                                session_duration = 0
+                                if supervisor.current_session:
+                                    session_duration = event_ts - supervisor.current_session.start_time
+                                # 保存学习结束照片
+                                study_end_image = save_photo(frame_rgb, "study_end.jpg") if frame_rgb is not None else None
                                 supervisor.on_person_left(event_ts)
+                                # 发送学习结束通知
+                                if session_duration > 0:
+                                    notifier.send_study_end(session_duration, study_end_image)
+                                else:
+                                    notifier.send_info("人脸消失")
+                                # 记录学习结束事件
+                                try:
+                                    diagnostic_log.log_session_event(
+                                        timestamp=event_ts,
+                                        event_type="end",
+                                        details={
+                                            "duration_s": session_duration,
+                                            "photo_path": study_end_image
+                                        }
+                                    )
+                                except Exception as e:
+                                    pass
                                 # 会话结束即时保存
                                 if storage and supervisor.session_history:
                                     storage.save_session(supervisor.session_history[-1], supervisor.config.camera_view)
@@ -334,8 +388,55 @@ def main():
                     if time_alert.alert_type == AlertType.BREAK_NEEDED and storage and supervisor.session_history:
                         storage.save_session(supervisor.session_history[-1], supervisor.config.camera_view)
 
+                alert_image_path = save_photo(frame_rgb, "alert.jpg") if (alerts and frame_rgb is not None) else None
+
+                # 记录维测日志 - 每一帧都记录，方便回溯排查
+                try:
+                    # 收集距离的详细数据
+                    distance_detail = None
+                    if detection_result:
+                        distance_detail = {
+                            "distance_cm": getattr(detection_result, "estimated_distance_cm", None),
+                            "confidence": getattr(getattr(detection_result, "distance_confidence", None), "value", None),
+                            "face_width_px": detection_result.distance_bbox[2] if detection_result.distance_bbox else None,
+                            "distance_bbox": list(detection_result.distance_bbox) if detection_result.distance_bbox else None,
+                            "face_bbox": list(detection_result.face_bbox) if detection_result.face_bbox else None,
+                        }
+
+                    diagnostic_log.log_frame_result(
+                        timestamp=event_ts,
+                        frame_id=frame_id,
+                        detection_result=detection_result,
+                        pose_metrics=detection_result.pose_metrics if detection_result else None,
+                        distance_data=distance_detail,
+                        supervisor_state={
+                            "person_detected": person_detected,
+                            "person_counter": person_counter,
+                            "person_gone_counter": person_gone_counter,
+                            "current_session": supervisor.current_session is not None,
+                            "is_resting": supervisor.is_resting,
+                        }
+                    )
+                except Exception as e:
+                    pass
+
+                # 发送告警并记录
                 for alert in alerts:
-                    notifier.send_alert(alert)
+                    notifier.send_alert(alert, alert_image_path)
+                    # 记录告警事件到维测日志
+                    try:
+                        alert_type_val = getattr(alert.alert_type, "value", str(alert.alert_type))
+                        severity_val = getattr(alert.severity, "value", str(alert.severity))
+                        diagnostic_log.log_alert_event(
+                            timestamp=event_ts,
+                            alert_type=alert_type_val,
+                            severity=severity_val,
+                            message=alert.message,
+                            details=getattr(alert, "details", None),
+                            photo_path=alert_image_path
+                        )
+                    except Exception as e:
+                        pass
 
             if now - last_display_time >= display_interval:
                 temp_str = f"{current_temp:.1f}C" if current_temp is not None else "N/A"
@@ -396,11 +497,39 @@ def main():
             pass
         receiver_thread.join(timeout=1.0)
         exit_ts = time.time()
+        # 获取最后一帧用于保存照片
+        exit_frame_rgb = None
+        with frame_lock:
+            if shared_frame.rgb_frame is not None:
+                exit_frame_rgb = shared_frame.rgb_frame.copy()
+        # 保存退出时照片
+        exit_image = save_photo(exit_frame_rgb, "study_end.jpg") if exit_frame_rgb is not None else None
         if person_detected and supervisor.current_session is not None:
+            session_duration = exit_ts - supervisor.current_session.start_time
             supervisor.on_person_left(exit_ts)
+            if session_duration > 0:
+                notifier.send_study_end(session_duration, exit_image)
+            # 记录程序退出时的学习结束事件
+            try:
+                diagnostic_log.log_session_event(
+                    timestamp=exit_ts,
+                    event_type="end",
+                    details={
+                        "duration_s": session_duration,
+                        "photo_path": exit_image,
+                        "reason": "shutdown"
+                    }
+                )
+            except Exception as e:
+                pass
         if storage:
             for session in supervisor.session_history:
                 storage.save_session(session, supervisor.config.camera_view)
+        # 强制清理一次维测日志中的过期数据
+        try:
+            diagnostic_log.force_cleanup()
+        except Exception as e:
+            pass
         try:
             detector.close()
         except Exception:

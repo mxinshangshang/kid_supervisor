@@ -72,6 +72,8 @@ class PoseMetrics:
     visible_keypoints: int = 0
     overall_quality: PoseQuality = PoseQuality.EXCELLENT
     issues: List[str] = field(default_factory=list)
+    # 详细的每个问题的得分记录，用于维测
+    issue_details: Dict[str, Dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -252,6 +254,7 @@ class MediaPipePoseDetector:
         ear_width_px = abs(right_ear[0] - left_ear[0])
         head_width_px = ear_width_px if ear_width_px > 1 else shoulder_width_px
 
+        shoulder_roll_angle = 0.0
         if is_front and left_shoulder_vis and right_shoulder_vis:
             shoulder_roll_angle = _safe_angle(right_shoulder[0] - left_shoulder[0], right_shoulder[1] - left_shoulder[1])
             metrics.shoulder_level = shoulder_roll_angle
@@ -266,8 +269,15 @@ class MediaPipePoseDetector:
                 deviation = (nose_to_ear_ratio - head_down_threshold) / head_down_threshold
                 severity = min(1.0, deviation)
                 metrics.head_pitch = nose_to_ear_ratio * 100
-                issue_score += severity * weights.get("head_down", 35.0)
-                metrics.issues.append("Head Down")
+                score = severity * weights.get("head_down", 35.0)
+                issue_score += score
+                metrics.issues.append("低头")
+                metrics.issue_details["低头"] = {
+                    "score": score,
+                    "raw_ratio": nose_to_ear_ratio,
+                    "threshold": head_down_threshold,
+                    "deviation": deviation
+                }
 
             ear_dx = right_ear[0] - left_ear[0]
             ear_dy = right_ear[1] - left_ear[1]
@@ -275,22 +285,38 @@ class MediaPipePoseDetector:
             metrics.head_roll = roll_angle
             if roll_angle > 12.0:
                 severity = min(1.0, (roll_angle - 12.0) / 18.0)
-                issue_score += severity * weights.get("head_tilt", 10.0)
-                metrics.issues.append("Head Tilted")
+                score = severity * weights.get("head_tilt", 10.0)
+                issue_score += score
+                metrics.issues.append("歪头")
+                metrics.issue_details["歪头"] = {
+                    "score": score,
+                    "raw_angle": roll_angle,
+                    "threshold": 12.0
+                }
 
             shoulder_roll_threshold = self._pose_cfg["shoulder_roll_degree_threshold"]
-            if shoulder_roll_angle > shoulder_roll_threshold:
+            if left_shoulder_vis and right_shoulder_vis and shoulder_roll_angle > shoulder_roll_threshold:
                 severity = min(1.0, (shoulder_roll_angle - shoulder_roll_threshold) / shoulder_roll_threshold)
-                issue_score += severity * weights.get("uneven_shoulders", 20.0)
-                if "Uneven Shoulders" not in metrics.issues:
-                    metrics.issues.append("Uneven Shoulders")
+                score = severity * weights.get("uneven_shoulders", 20.0)
+                issue_score += score
+                metrics.issues.append("肩膀不平")
+                metrics.issue_details["肩膀不平"] = {
+                    "score": score,
+                    "raw_angle": shoulder_roll_angle,
+                    "threshold": shoulder_roll_threshold
+                }
 
             lean_ratio = _safe_ratio(abs(nose[0] - ((left_shoulder[0] + right_shoulder[0]) / 2)), shoulder_width_px)
             if lean_ratio > self._pose_cfg["lean_forward_ratio_threshold"]:
                 severity = min(1.0, (lean_ratio - self._pose_cfg["lean_forward_ratio_threshold"]) / self._pose_cfg["lean_forward_ratio_threshold"])
-                issue_score += severity * weights.get("leaning_forward", 30.0)
-                if "Leaning Forward" not in metrics.issues:
-                    metrics.issues.append("Leaning Forward")
+                score = severity * weights.get("leaning_forward", 30.0)
+                issue_score += score
+                metrics.issues.append("前倾")
+                metrics.issue_details["前倾"] = {
+                    "score": score,
+                    "raw_ratio": lean_ratio,
+                    "threshold": self._pose_cfg["lean_forward_ratio_threshold"]
+                }
 
         if is_side and (left_shoulder_vis or right_shoulder_vis) and (left_hip_vis or right_hip_vis):
             visible_shoulder = left_shoulder if left_shoulder_vis else right_shoulder
@@ -301,8 +327,14 @@ class MediaPipePoseDetector:
             metrics.torso_lean = torso_angle
             if torso_angle > 18.0:
                 severity = min(1.0, (torso_angle - 18.0) / 20.0)
-                issue_score += severity * weights.get("leaning_forward", 30.0)
-                metrics.issues.append("Leaning Forward")
+                score = severity * weights.get("leaning_forward", 30.0)
+                issue_score += score
+                metrics.issues.append("前倾")
+                metrics.issue_details["前倾"] = {
+                    "score": score,
+                    "raw_angle": torso_angle,
+                    "threshold": 18.0
+                }
 
         if is_side and side_facing and (left_shoulder_vis or right_shoulder_vis):
             visible_shoulder_x = left_shoulder[0] if left_shoulder_vis else right_shoulder[0]
@@ -310,15 +342,27 @@ class MediaPipePoseDetector:
             head_forward_ratio = _safe_ratio(shoulder_dx, shoulder_width_px)
             if head_forward_ratio > self._pose_cfg["head_forward_ratio_threshold"]:
                 severity = min(1.0, (head_forward_ratio - self._pose_cfg["head_forward_ratio_threshold"]) / self._pose_cfg["head_forward_ratio_threshold"])
-                issue_score += severity * weights.get("head_forward", 30.0)
-                metrics.issues.append("Head Forward")
+                score = severity * weights.get("head_forward", 30.0)
+                issue_score += score
+                metrics.issues.append("头前伸")
+                metrics.issue_details["头前伸"] = {
+                    "score": score,
+                    "raw_ratio": head_forward_ratio,
+                    "threshold": self._pose_cfg["head_forward_ratio_threshold"]
+                }
 
             shoulder_y = left_shoulder[1] if left_shoulder_vis else right_shoulder[1]
             desk_ratio = _safe_ratio(nose[1] - shoulder_y, shoulder_width_px)
             if desk_ratio > self._pose_cfg["desk_proximity_ratio_threshold"]:
                 severity = min(1.0, (desk_ratio - self._pose_cfg["desk_proximity_ratio_threshold"]) / self._pose_cfg["desk_proximity_ratio_threshold"])
-                issue_score += severity * weights.get("desk_proximity", 35.0)
-                metrics.issues.append("Too Close To Desk")
+                score = severity * weights.get("desk_proximity", 35.0)
+                issue_score += score
+                metrics.issues.append("离桌太近")
+                metrics.issue_details["离桌太近"] = {
+                    "score": score,
+                    "raw_ratio": desk_ratio,
+                    "threshold": self._pose_cfg["desk_proximity_ratio_threshold"]
+                }
 
         metrics.posture_score = min(100.0, issue_score)
         if issue_score == 0:

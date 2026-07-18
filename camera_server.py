@@ -35,21 +35,29 @@ MAX_FPS = CAM["fps"]
 JPEG_QUALITY = CAM["jpeg_quality"]
 HOST = NET["host"]
 PORT = NET["port"]
+CAMERA_NUM = CAM.get("camera_num", 0)
+HFLIP = CAM.get("hflip", False)
+VFLIP = CAM.get("vflip", False)
 
 
 def init_camera():
-    print("[Camera] 启动中 (picamera2)...")
-    picam2 = Picamera2()
+    print(f"[Camera] 启动中 (picamera2)... 摄像头编号: {CAMERA_NUM}")
+    picam2 = Picamera2(camera_num=CAMERA_NUM)
+
+    from libcamera import Transform
+    transform = Transform(hflip=HFLIP, vflip=VFLIP)
 
     preview_config = picam2.create_preview_configuration(
         main={"format": CAM.get("format", "RGB888"), "size": FRAME_SIZE},
-        controls={"FrameRate": MAX_FPS}
+        controls={"FrameRate": MAX_FPS},
+        transform=transform,
     )
     picam2.configure(preview_config)
     picam2.start()
     time.sleep(1)
 
     print(f"[Camera] 启动成功")
+    print(f"[Camera] 翻转设置: hflip={HFLIP}, vflip={VFLIP}")
     print(f"[Camera] 当前配置: {picam2.camera_configuration()}")
     return picam2
 
