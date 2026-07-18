@@ -8,8 +8,7 @@
 2. JPEG 编码前：RGB -> BGR
 3. JPEG 解码后：BGR -> RGB
 4. 推理与预览统一使用 RGB
-
-这样可以避免旧版本中推理和预览重复来回转换的问题。
+5. 保存照片时直接使用 RGB，不做额外转换
 
 ---
 
@@ -40,7 +39,7 @@
 
 ## 3. 推理流程
 
-当前推理进程采用“接收线程 + 主循环”结构。
+当前推理进程采用"接收线程 + 主循环"结构。
 
 ### 3.1 接收线程
 
@@ -60,8 +59,7 @@
 2. 按 `inference_fps` 运行姿态检测
 3. 按 `display_fps` 刷新预览
 4. 在 headless 模式下输出统计日志
-
-这种设计避免了旧版阻塞式 `recv()` 让整个循环卡住的问题。
+5. 调用诊断日志记录每帧结果
 
 ---
 
@@ -69,7 +67,7 @@
 
 ### 4.1 当前方案
 
-当前版本不再使用“鼻子中心 + 固定方框”的伪人脸框。
+当前版本不再使用"鼻子中心 + 固定方框"的伪人脸框。
 
 改为：
 
@@ -107,19 +105,19 @@ distance = (face_real_width_cm * camera_focal_length) / face_width_px
 
 检测重点：
 
-1. `Head Down`
-2. `Head Tilted`
-3. `Leaning Forward`
-4. `Uneven Shoulders`
+1. `低头`
+2. `歪头`
+3. `前倾`
+4. `双肩不平`
 5. 距离过近
 
 ### 5.2 侧面模式 `side`
 
 检测重点：
 
-1. `Head Forward`
-2. `Too Close To Desk`
-3. `Leaning Forward`
+1. `头前伸`
+2. `趴桌`
+3. `前倾`
 
 说明：
 
@@ -150,6 +148,23 @@ pose:
 2. 原因可解释
 3. 可按真实书桌环境调参
 
+### 6.1 问题详情记录
+
+从 v4.2 开始，`PoseMetrics` 新增 `issue_details` 字段，保存每个问题的原始计算数据：
+
+```python
+metrics.issue_details = {
+    "低头": {
+        "score": 35.0,
+        "raw_ratio": 0.18,
+        "threshold": 0.16
+    },
+    ...
+}
+```
+
+这用于诊断日志回溯和告警时选择最严重问题。
+
 ---
 
 ## 7. 存在检测防抖
@@ -158,8 +173,8 @@ pose:
 
 ```yaml
 supervision:
-  presence_enter_frames: 5
-  presence_exit_frames: 15
+  presence_enter_frames: 2
+  presence_exit_frames: 5
   presence_grace_s: 2.0
 ```
 
@@ -190,7 +205,51 @@ supervision:
 
 ---
 
-## 9. 温控策略
+## 9. 告警消息
+
+从 v4.2 开始：
+
+1. 问题标签直接用中文在 `pose_detector.py` 中生成（不再翻译）
+2. 告警只显示得分最高的一个问题
+3. 消息格式：`{问题} ({严重度})`，例如：`低头 (中度)`
+
+---
+
+## 10. 诊断日志
+
+新增 `src/diagnostic_log.py` - `DiagnosticLogger` 类。
+
+### 10.1 功能
+
+1. 记录每帧完整算法结果（检测、姿势、距离、监督器状态）
+2. 记录告警事件（含照片路径）
+3. 记录学习会话状态变化
+4. 自动清理 3 天前旧数据
+5. 提供查询接口 `query_logs()` / `query_alerts()`
+
+### 10.2 数据表
+
+- `diagnostic_logs` - 逐帧数据
+- `alert_events` - 告警事件（含照片路径）
+- `session_events` - 会话状态变化
+
+### 10.3 使用示例
+
+```python
+from diagnostic_log import DiagnosticLogger
+
+logger = DiagnosticLogger("data/diagnostic_log.db")
+
+# 查询最近告警
+alerts = logger.query_alerts(limit=10)
+
+# 查询某段时间的帧日志
+logs = logger.query_logs(start_time=time.time() - 3600, limit=100)
+```
+
+---
+
+## 11. 温控策略
 
 当前温度读取优先走：
 
@@ -209,7 +268,7 @@ supervision:
 
 ---
 
-## 10. 最小持久化
+## 12. 最小持久化
 
 当前通过 SQLite 保存会话：
 
@@ -227,3 +286,16 @@ supervision:
 数据库层通过唯一索引和 upsert 避免重复写入同一会话。
 
 这为后续统计和回看提供了基础数据，但当前不包含 Web 查询界面。
+
+---
+
+## 13. 照片留存
+
+从 v4.2 开始：
+
+1. 告警时拍照并发送飞书
+2. 学习开始时拍照并发送飞书
+3. 学习结束时拍照并发送飞书
+4. 照片路径记录在诊断日志的告警事件中
+
+照片保存函数 `save_photo()` 直接保存 RGB 帧，不做多余颜色转换，避免颜色反转。
